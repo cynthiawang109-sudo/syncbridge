@@ -1,6 +1,7 @@
 import { Worker } from "bullmq";
 import { setTimeout as sleep } from "node:timers/promises";
 import { db } from "../../packages/shared/db";
+import { rewrapTokenBatch } from "../../packages/shared/key-rotation";
 import {
   createQueue,
   PageJob,
@@ -25,6 +26,7 @@ worker.on("failed", logError);
 queue.on("error", logError);
 let stopping = false;
 async function dispatch() {
+  let nextRewrap = 0;
   while (!stopping) {
     try {
       const due = await duePages();
@@ -35,6 +37,10 @@ async function dispatch() {
           opts: { jobId: key },
         })),
       );
+      if (Date.now() >= nextRewrap) {
+        nextRewrap = Date.now() + 5000;
+        await rewrapTokenBatch();
+      }
     } catch {
       logError();
     }

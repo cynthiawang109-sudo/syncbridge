@@ -136,6 +136,7 @@ model OperationAttempt {
   run          SyncRun    @relation(fields: [runId], references: [id])
   attemptCount Int        @default(0) @map("attempt_count")
   dueAt        DateTime   @default(now()) @map("due_at")
+  pausedAt     DateTime?  @map("paused_at")
   state        ClaimState @default(pending)
   claimToken   String?    @map("claim_token")
   leaseUntil   DateTime?  @map("lease_until")

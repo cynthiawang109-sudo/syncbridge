@@ -8,7 +8,7 @@ export class LocalKeyProvider implements KeyProvider {
   readonly currentVersion = process.env.ENVELOPE_KEY_VERSION ?? "local-v1";
   key(version: string) {
     const previous = JSON.parse(
-      process.env.PREVIOUS_ENVELOPE_KEYS ?? "{}",
+      process.env.PREVIOUS_ENVELOPE_KEYS || "{}",
     ) as Record<string, string>;
     const encoded =
       version === this.currentVersion

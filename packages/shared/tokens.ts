@@ -51,7 +51,10 @@ function fence(row: Connection) {
 }
 async function stillOwns(row: Connection) {
   return !!(await db.connection.findFirst({
-    where: { ...fence(row), refreshLeaseUntil: { gt: new Date() } },
+    where: {
+      ...fence(row),
+      refreshLeaseUntil: { gt: new Date(Date.now() + REFRESH_TIMEOUT) },
+    },
   }));
 }
 async function finishFailure(

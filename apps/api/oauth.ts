@@ -13,6 +13,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { Caller, Identity, Public } from "./auth";
 import { connectionView, ownConnection } from "./tenants";
 import { db } from "../../packages/shared/db";
+import { attemptDelay } from "../../packages/shared/attempts";
 import {
   browserProvider,
   callback,
@@ -58,6 +59,7 @@ export class OAuthController {
   @Public()
   @Get("oauth/callback")
   @Header("Cache-Control", "no-store")
+  @Header("Referrer-Policy", "no-referrer")
   async complete(@Query("state") state: unknown, @Query("code") code: unknown) {
     if (
       typeof code !== "string" ||
@@ -94,23 +96,51 @@ export class OAuthController {
     } catch {
       throw new BadGatewayException("OAuth exchange failed");
     }
-    const saved = await db.connection.updateMany({
-      where: {
-        id: row.id,
-        tenantId: row.tenantId,
-        lifecycle: "active",
-        generation: row.generation,
-        tokenVersion: row.tokenVersion,
-        refreshGeneration: row.refreshGeneration,
-        refreshLeaseUntil: null,
-      },
-      data,
-    });
-    if (!saved.count)
-      throw new ConflictException("Connection changed during OAuth exchange");
-    return db.connection.findUnique({
-      where: { id: row.id },
-      select: connectionView,
+    return db.$transaction(async (tx) => {
+      const saved = await tx.connection.updateMany({
+        where: {
+          id: row.id,
+          tenantId: row.tenantId,
+          lifecycle: "active",
+          generation: row.generation,
+          tokenVersion: row.tokenVersion,
+          refreshGeneration: row.refreshGeneration,
+          refreshLeaseUntil: null,
+        },
+        data,
+      });
+      if (!saved.count)
+        throw new ConflictException("Connection changed during OAuth exchange");
+      const paused = await tx.operationAttempt.findMany({
+        where: {
+          state: "pending",
+          pausedAt: { not: null },
+          run: { connectionId: row.id, status: "running" },
+        },
+      });
+      const now = Date.now();
+      for (const attempt of paused) {
+        if (!attempt.pausedAt) continue;
+        const duration = now - attempt.pausedAt.getTime();
+        await tx.operationAttempt.update({
+          where: { key: attempt.key },
+          data: {
+            createdAt: new Date(attempt.createdAt.getTime() + duration),
+            dueAt: new Date(
+              now +
+                Math.max(
+                  attemptDelay(attempt.attemptCount),
+                  attempt.dueAt.getTime() - attempt.pausedAt.getTime(),
+                ),
+            ),
+            pausedAt: null,
+          },
+        });
+      }
+      return tx.connection.findUniqueOrThrow({
+        where: { id: row.id },
+        select: connectionView,
+      });
     });
   }
 }

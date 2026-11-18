@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
+import { attemptDelay } from "../../packages/shared/attempts";
 import { db, lockConnection } from "../../packages/shared/db";
 import {
   Employee,
@@ -256,7 +257,7 @@ async function finishError(claim: Claim, error: unknown) {
           : "local_processing_error"));
     const delay = Math.max(
       providerError?.retryAfter ?? 0,
-      1500 * 2 ** (claim.attemptCount - 1) + Math.floor(Math.random() * 150),
+      attemptDelay(claim.attemptCount),
     );
     const due = new Date(Date.now() + delay);
     const retry =
@@ -269,6 +270,7 @@ async function finishError(claim: Claim, error: unknown) {
       data: {
         state: paused || retry ? "pending" : "failed",
         dueAt: paused ? claim.dueAt : due,
+        pausedAt: paused ? new Date() : null,
         claimToken: null,
         leaseUntil: null,
       },
