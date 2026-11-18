@@ -368,6 +368,10 @@ describe("MVP-A integration against Compose", () => {
       ),
     ).toEqual([other.id]);
     const tenant = (await json("/tenant", connection.token)).id;
+    const otherTenant = (await json("/tenant", other.token)).id;
+    expect(
+      (await request(path, identity(otherTenant, "viewer"), "DELETE")).status,
+    ).toBe(404);
     expect(
       (await request(path, identity(tenant, "viewer"), "DELETE")).status,
     ).toBe(403);

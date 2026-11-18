@@ -3,6 +3,7 @@ import {
   ExecutionContext,
   ForbiddenException,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
   SetMetadata,
   createParamDecorator,
@@ -16,11 +17,11 @@ export type Identity = {
   actor: string;
 };
 type Request = {
+  method: string;
   headers: Record<string, string | undefined>;
   params: Record<string, string>;
   query: unknown;
   body: unknown;
-  url: string;
   identity: Identity;
 };
 export const Public = () => SetMetadata("public", true);
@@ -28,9 +29,6 @@ export const Caller = createParamDecorator(
   (_, context: ExecutionContext) =>
     context.switchToHttp().getRequest<Request>().identity,
 );
-export function operator(identity: Identity) {
-  if (identity.role !== "operator") throw new ForbiddenException();
-}
 export async function deny(identity: Identity, object: string, reason: string) {
   await db.authorizationAudit.create({
     data: { actor: identity.actor, object, reason },
@@ -99,15 +97,25 @@ export class AuthGuard implements CanActivate {
       throw new ForbiddenException();
     }
     if (
-      ![
-        "readTenant",
-        "listConnections",
-        "readConnection",
-        "records",
-        "readRun",
-      ].includes(context.getHandler().name) &&
+      !["GET", "HEAD"].includes(request.method) &&
       identity.role !== "operator"
     ) {
+      const id = request.params.id;
+      if (
+        id &&
+        !(await db.connection.findFirst({
+          where: {
+            id,
+            tenantId: identity.tenantId,
+            lifecycle: { not: "deleted" },
+            tenant: { deletedAt: null },
+          },
+          select: { id: true },
+        }))
+      ) {
+        await deny(identity, id, "connection_unavailable");
+        throw new NotFoundException();
+      }
       await deny(identity, object, "insufficient_role");
       throw new ForbiddenException();
     }
