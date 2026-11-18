@@ -1,0 +1,156 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Lifecycle {
+  active
+  closing
+  deleted
+}
+
+enum TokenStatus {
+  disconnected
+  connected
+  needs_reauth
+  error
+}
+
+enum RunStatus {
+  queued
+  running
+  succeeded
+  partial
+  failed
+}
+
+enum Mode {
+  full
+  incremental
+}
+
+enum ClaimState {
+  pending
+  claimed
+  done
+  failed
+}
+
+model Tenant {
+  id          String       @id
+  name        String
+  deletedAt   DateTime?    @map("deleted_at")
+  connections Connection[]
+
+  @@map("tenants")
+}
+
+model Connection {
+  id                String           @id @default(uuid())
+  tenantId          String           @map("tenant_id")
+  tenant            Tenant           @relation(fields: [tenantId], references: [id])
+  name              String
+  provider          String           @default("mock")
+  lifecycle         Lifecycle        @default(active)
+  generation        Int              @default(0)
+  tokenStatus       TokenStatus      @default(disconnected) @map("token_status")
+  tokenError        String?          @map("token_error")
+  encryptedTokens   String?          @map("encrypted_tokens")
+  keyVersion        String?          @map("key_version")
+  tokenExpiresAt    DateTime?        @map("token_expires_at")
+  tokenVersion      Int              @default(0) @map("token_version")
+  scopes            String[]         @default([])
+  refreshGeneration Int              @default(0) @map("refresh_generation")
+  refreshLeaseUntil DateTime?        @map("refresh_lease_until")
+  oauthStateHash    String?          @unique @map("oauth_state_hash")
+  oauthVerifier     String?          @map("oauth_verifier")
+  oauthExpiresAt    DateTime?        @map("oauth_expires_at")
+  watermark         Int              @default(0)
+  records           ExternalRecord[]
+  runs              SyncRun[]
+
+  @@index([tenantId])
+  @@map("connections")
+}
+
+model ExternalRecord {
+  connectionId String              @map("connection_id")
+  connection   Connection          @relation(fields: [connectionId], references: [id])
+  resourceType String              @map("resource_type")
+  externalId   String              @map("external_id")
+  version      Int
+  payloadHash  String              @map("payload_hash")
+  payload      Json
+  tombstone    Boolean             @default(false)
+  lastSyncedAt DateTime            @map("last_synced_at")
+  outcomes     SyncRecordOutcome[]
+
+  @@id([connectionId, resourceType, externalId])
+  @@map("external_records")
+}
+
+model SyncRun {
+  id           String              @id @default(uuid())
+  connectionId String              @map("connection_id")
+  connection   Connection          @relation(fields: [connectionId], references: [id])
+  generation   Int
+  resourceType String              @default("employees") @map("resource_type")
+  mode         Mode
+  status       RunStatus           @default(queued)
+  cursor       String?
+  snapshot     String?
+  watermark    Int?
+  since        Int
+  page         Int                 @default(0)
+  error        String?
+  createdAt    DateTime            @default(now()) @map("created_at")
+  outcomes     SyncRecordOutcome[]
+  attempts     OperationAttempt[]
+
+  @@map("sync_runs")
+}
+
+model SyncRecordOutcome {
+  runId             String         @map("run_id")
+  run               SyncRun        @relation(fields: [runId], references: [id])
+  recordKey         String         @map("record_key")
+  operationIdentity String         @map("operation_identity")
+  connectionId      String         @map("connection_id")
+  resourceType      String         @map("resource_type")
+  record            ExternalRecord @relation(fields: [connectionId, resourceType, recordKey], references: [connectionId, resourceType, externalId])
+  version           Int
+  result            String
+  conflictHash      String?        @map("conflict_hash")
+
+  @@id([runId, recordKey, operationIdentity])
+  @@map("sync_record_outcomes")
+}
+
+model OperationAttempt {
+  key          String     @id
+  runId        String     @map("run_id")
+  run          SyncRun    @relation(fields: [runId], references: [id])
+  attemptCount Int        @default(0) @map("attempt_count")
+  dueAt        DateTime   @default(now()) @map("due_at")
+  state        ClaimState @default(pending)
+  claimToken   String?    @map("claim_token")
+  leaseUntil   DateTime?  @map("lease_until")
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  @@index([state, dueAt])
+  @@map("operation_attempt")
+}
+
+model AuthorizationAudit {
+  id        String   @id @default(uuid())
+  actor     String
+  object    String
+  reason    String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("authorization_audit")
+}
