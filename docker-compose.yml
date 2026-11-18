@@ -1,6 +1,5 @@
 x-app: &app
-  build: .
-  image: syncbridge-local
+  image: ${COMPOSE_PROJECT_NAME:-syncbridge}-local
   environment:
     DATABASE_URL: postgresql://syncbridge:syncbridge@postgres:5432/syncbridge
     REDIS_HOST: redis
@@ -9,11 +8,9 @@ x-app: &app
     CALLBACK_URL: http://localhost:4300/oauth/callback
     JWT_SECRET: ${JWT_SECRET:-local-demo-jwt-signing-only}
     ENVELOPE_KEY: ${ENVELOPE_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
-  depends_on:
-    postgres:
-      condition: service_healthy
-    redis:
-      condition: service_healthy
+    ENVELOPE_KEY_VERSION: ${ENVELOPE_KEY_VERSION:-local-v1}
+    PREVIOUS_ENVELOPE_KEYS: ${PREVIOUS_ENVELOPE_KEYS:-}
+
 services:
   postgres:
     image: postgres:16
@@ -22,6 +19,7 @@ services:
       POSTGRES_PASSWORD: syncbridge
       POSTGRES_DB: syncbridge
     ports: ["127.0.0.1:45432:5432"]
+    volumes: [postgres-data:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U syncbridge"]
       interval: 2s
@@ -36,19 +34,26 @@ services:
       retries: 20
   api:
     <<: *app
+    build: .
+    pull_policy: build
     command:
       [
         "sh",
         "-c",
         "npm exec -- prisma migrate deploy && exec node dist/apps/api/main.js",
       ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-provider:
+        condition: service_healthy
     healthcheck:
       test:
         [
           "CMD",
           "node",
           "-e",
-          "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
         ]
       interval: 2s
       timeout: 3s
@@ -56,11 +61,28 @@ services:
     ports: ["127.0.0.1:4300:3000"]
   worker:
     <<: *app
+    pull_policy: never
     command: ["node", "dist/apps/worker/main.js"]
     depends_on:
       api:
         condition: service_healthy
+      redis:
+        condition: service_healthy
   mock-provider:
     <<: *app
+    pull_policy: never
     command: ["node", "dist/apps/mock-provider/main.js"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 20
     ports: ["127.0.0.1:4301:3001"]
+volumes:
+  postgres-data:
