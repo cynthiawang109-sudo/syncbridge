@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { Connection } from "@prisma/client";
+import { Connection, Prisma } from "@prisma/client";
 import { db, lockConnection } from "./db";
 import { Envelope } from "./crypto";
 import {
@@ -88,30 +88,46 @@ export async function accessFor(
 ) {
   const deadline = Date.now() + LEASE_MS + 1000;
   while (Date.now() < deadline) {
-    const claim = await db.$transaction(async (tx) => {
-      const row = await lockConnection(tx, id);
-      if (!isUsable(row, generation))
-        throw new ConnectionUnavailable(row?.tokenStatus ?? "missing");
-      if (
-        (rejectedVersion !== undefined &&
-          row.tokenVersion !== rejectedVersion) ||
-        (rejectedVersion === undefined &&
-          (row.tokenExpiresAt?.getTime() ?? 0) > Date.now() + PROACTIVE_MS)
-      ) {
-        return { ready: row };
-      }
-      if (row.refreshLeaseUntil && row.refreshLeaseUntil.getTime() > Date.now())
-        return {};
-      return {
-        claimed: await tx.connection.update({
-          where: { id },
-          data: {
-            refreshLeaseUntil: new Date(Date.now() + LEASE_MS),
-            refreshGeneration: { increment: 1 },
-          },
-        }),
-      };
-    });
+    const claim = await db
+      .$transaction(
+        async (tx) => {
+          const row = await lockConnection(tx, id);
+          if (!isUsable(row, generation))
+            throw new ConnectionUnavailable(row?.tokenStatus ?? "missing");
+          if (
+            (rejectedVersion !== undefined &&
+              row.tokenVersion !== rejectedVersion) ||
+            (rejectedVersion === undefined &&
+              (row.tokenExpiresAt?.getTime() ?? 0) > Date.now() + PROACTIVE_MS)
+          ) {
+            return { ready: row };
+          }
+          if (
+            row.refreshLeaseUntil &&
+            row.refreshLeaseUntil.getTime() > Date.now()
+          )
+            return {};
+          return {
+            claimed: await tx.connection.update({
+              where: { id },
+              data: {
+                refreshLeaseUntil: new Date(Date.now() + LEASE_MS),
+                refreshGeneration: { increment: 1 },
+              },
+            }),
+          };
+        },
+        { maxWait: 1000 },
+      )
+      .catch((error: unknown) => {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          (error.code === "P2028" || error.code === "P2024")
+        ) {
+          return { ready: undefined, claimed: undefined };
+        }
+        throw error;
+      });
     if (claim.ready) return openUsable(claim.ready);
     if (!claim.claimed) {
       await sleep(60);

@@ -310,12 +310,10 @@ describe("MVP-A integration against Compose", () => {
         accessFor(connection.id, 0, 1),
       ]);
       expect(
-        results.every(
-          (result) =>
-            result.status === "rejected" &&
-            result.reason.message === "needs_reauth",
+        results.map((result) =>
+          result.status === "rejected" ? result.reason.message : "fulfilled",
         ),
-      ).toBe(true);
+      ).toEqual(["needs_reauth", "needs_reauth"]);
       await sleep(400);
       expect(await rowOf(connection.id)).toMatchObject({
         tokenVersion: 1,
