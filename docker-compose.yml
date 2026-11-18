@@ -1,0 +1,47 @@
+x-app: &app
+  build: .
+  image: syncbridge-local
+  environment:
+    DATABASE_URL: postgresql://syncbridge:syncbridge@postgres:5432/syncbridge
+    REDIS_HOST: redis
+    PROVIDER_URL: http://mock-provider:3001
+    PROVIDER_BROWSER_URL: http://localhost:4301
+    CALLBACK_URL: http://localhost:4300/oauth/callback
+    JWT_SECRET: ${JWT_SECRET:-local-demo-jwt-signing-only}
+    ENVELOPE_KEY: ${ENVELOPE_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: syncbridge
+      POSTGRES_PASSWORD: syncbridge
+      POSTGRES_DB: syncbridge
+    ports: ["127.0.0.1:45432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U syncbridge"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+  api:
+    <<: *app
+    command: ["node","dist/apps/api/main.js"]
+    ports: ["127.0.0.1:4300:3000"]
+  worker:
+    <<: *app
+    command: ["node","dist/apps/worker/main.js"]
+  mock-provider:
+    <<: *app
+    command: ["node","dist/apps/mock-provider/main.js"]
+    ports: ["127.0.0.1:4301:3001"]
