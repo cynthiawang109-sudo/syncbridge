@@ -1,1 +1,4 @@
-{"name":"@syncbridge/mock-provider","private":true}
+{
+  "name": "@syncbridge/mock-provider",
+  "private": true
+}

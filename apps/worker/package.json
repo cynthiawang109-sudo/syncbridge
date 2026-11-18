@@ -1,1 +1,4 @@
-{"name":"@syncbridge/worker","private":true}
+{
+  "name": "@syncbridge/worker",
+  "private": true
+}

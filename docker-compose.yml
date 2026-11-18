@@ -36,12 +36,31 @@ services:
       retries: 20
   api:
     <<: *app
-    command: ["node","dist/apps/api/main.js"]
+    command:
+      [
+        "sh",
+        "-c",
+        "npm exec -- prisma migrate deploy && exec node dist/apps/api/main.js",
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 20
     ports: ["127.0.0.1:4300:3000"]
   worker:
     <<: *app
-    command: ["node","dist/apps/worker/main.js"]
+    command: ["node", "dist/apps/worker/main.js"]
+    depends_on:
+      api:
+        condition: service_healthy
   mock-provider:
     <<: *app
-    command: ["node","dist/apps/mock-provider/main.js"]
+    command: ["node", "dist/apps/mock-provider/main.js"]
     ports: ["127.0.0.1:4301:3001"]

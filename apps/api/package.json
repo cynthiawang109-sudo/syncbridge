@@ -1,1 +1,4 @@
-{"name":"@syncbridge/api","private":true}
+{
+  "name": "@syncbridge/api",
+  "private": true
+}

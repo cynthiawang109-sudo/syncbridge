@@ -1,0 +1,13 @@
+import { Queue } from "bullmq";
+export const queueName = "employee-sync";
+export const redisConnection = {
+  host: process.env.REDIS_HOST ?? "localhost",
+  port: Number(process.env.REDIS_PORT ?? 6379),
+};
+export type PageJob = { operationKey: string };
+export function createQueue() {
+  return new Queue<PageJob>(queueName, {
+    connection: redisConnection,
+    defaultJobOptions: { removeOnComplete: true, removeOnFail: true },
+  });
+}

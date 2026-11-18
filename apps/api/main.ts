@@ -1,11 +1,25 @@
 import "reflect-metadata";
-import { Module } from "@nestjs/common";
+import { Controller, Get, Module } from "@nestjs/common";
 import { APP_GUARD, NestFactory } from "@nestjs/core";
-import { AuthGuard } from "./auth";
+import { AuthGuard, Public } from "./auth";
 import { TenantsController } from "./tenants";
 import { OAuthController } from "./oauth";
+import { SyncController } from "./sync";
+@Controller()
+class HealthController {
+  @Public()
+  @Get("health")
+  health() {
+    return { ok: true };
+  }
+}
 @Module({
-  controllers: [TenantsController, OAuthController],
+  controllers: [
+    HealthController,
+    TenantsController,
+    OAuthController,
+    SyncController,
+  ],
   providers: [{ provide: APP_GUARD, useClass: AuthGuard }],
 })
 class AppModule {}
