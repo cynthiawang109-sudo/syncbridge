@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import Fastify, { FastifyReply } from "fastify";
 import { createHash, randomUUID } from "node:crypto";
 
 const app = Fastify({ logger: false });
@@ -28,6 +28,7 @@ type Faults = {
   expireAccess?: boolean;
   revokeRefresh?: boolean;
   refreshDelayMs?: number;
+  refreshStatus?: 403 | 503;
   rotateBeforeDelay?: boolean;
   accessLifetime?: number;
   expireSnapshot?: boolean;
@@ -54,6 +55,19 @@ function validAccess(header?: string) {
     (access.get(header?.replace(/^Bearer /, "") ?? "")?.expires ?? 0) >
     Date.now()
   );
+}
+function rateLimited(reply: FastifyReply) {
+  if (!faults.rateLimit) return false;
+  const retryAfter =
+    faults.rateLimit === "delta"
+      ? "1"
+      : new Date(Math.ceil(Date.now() / 1000) * 1000 + 1000).toUTCString();
+  delete faults.rateLimit;
+  reply
+    .header("Retry-After", retryAfter)
+    .code(429)
+    .send({ error: "rate_limited" });
+  return true;
 }
 function removeExpired<T extends { expires: number }>(map: Map<string, T>) {
   for (const [key, value] of map)
@@ -122,6 +136,11 @@ app.post<{ Body: Record<string, string> }>("/token", async (req, reply) => {
   if (form.grant_type !== "refresh_token")
     return reply.code(400).send({ error: "unsupported_grant_type" });
   refreshCalls++;
+  if (faults.refreshStatus === 403 || faults.refreshStatus === 503) {
+    const status = faults.refreshStatus;
+    delete faults.refreshStatus;
+    return reply.code(status).send({ error: "test_refresh_failure" });
+  }
   const { refreshDelayMs, rotateBeforeDelay } = faults;
   const rotate = () => {
     const session = refresh.get(form.refresh_token);
@@ -153,6 +172,7 @@ app.post<{ Body: Record<string, string> }>("/revoke", (req) => {
 app.get<{ Params: { id: string } }>("/employees/:id", (req, reply) => {
   if (!validAccess(req.headers.authorization))
     return reply.code(401).send({ error: "invalid_token" });
+  if (rateLimited(reply)) return reply;
   return (
     employees.find((row) => row.id === req.params.id) ??
     reply.code(404).send({ error: "not_found" })
@@ -164,6 +184,7 @@ app.get<{
   if (!validAccess(req.headers.authorization))
     return reply.code(401).send({ error: "invalid_token" });
   listCalls++;
+  if (rateLimited(reply)) return reply;
   const q = req.query;
   const cursor = q.cursor && cursors.get(q.cursor);
   if (
@@ -173,17 +194,6 @@ app.get<{
     return reply.code(409).send({ error: "snapshot_expired" });
   }
   const offset = cursor ? cursor.offset : 0;
-  if (faults.rateLimit) {
-    const header =
-      faults.rateLimit === "delta"
-        ? "1"
-        : new Date(Math.ceil(Date.now() / 1000) * 1000 + 1000).toUTCString();
-    delete faults.rateLimit;
-    return reply
-      .header("Retry-After", header)
-      .code(429)
-      .send({ error: "rate_limited" });
-  }
   if (faults.failPage === offset / pageSize + 1) {
     delete faults.failPage;
     return reply.code(503).send({ error: "temporary_failure" });
