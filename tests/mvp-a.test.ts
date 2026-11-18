@@ -1,9 +1,10 @@
 import { afterAll, afterEach, describe, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
-import { fork } from "node:child_process";
+import { execFile, fork } from "node:child_process";
+import { createServer } from "node:net";
 import { resolve } from "node:path";
-
 import { setTimeout as sleep } from "node:timers/promises";
+import { promisify } from "node:util";
 import { db } from "../packages/shared/db";
 import { Envelope } from "../packages/shared/crypto";
 import { ProviderError, fetchEmployees } from "../packages/shared/provider";
@@ -212,6 +213,44 @@ describe("MVP-A integration against Compose", () => {
       expect((await rowOf(connection.id)).tokenStatus).toBe(expected);
     },
   );
+
+  test("a transport failure before dispatch is retryable without pausing the connection", async () => {
+    const connection = await connected();
+    const server = createServer();
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const address = server.address();
+    await new Promise<void>((done, fail) =>
+      server.close((error) => (error ? fail(error) : done())),
+    );
+    if (!address || typeof address === "string")
+      throw new Error("Fixture needs a TCP port");
+
+    const task = `
+      const { db } = require("./dist/packages/shared/db.js");
+      const { accessFor } = require("./dist/packages/shared/tokens.js");
+      accessFor(process.argv[1], 0, 1).then(
+        () => { process.exitCode = 1; },
+        error => console.log(error.reason, error.retryable),
+      ).finally(() => db.$disconnect());
+    `;
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      ["-e", task, connection.id],
+      {
+        env: {
+          ...process.env,
+          PROVIDER_URL: `http://127.0.0.1:${address.port}`,
+        },
+        timeout: 8000,
+      },
+    );
+    expect(stdout.trim()).toBe("provider_unreachable true");
+    expect(await rowOf(connection.id)).toMatchObject({
+      tokenVersion: 1,
+      tokenStatus: "connected",
+      refreshLeaseUntil: null,
+    });
+  });
 
   test("T22 a PostgreSQL write failure after rotation pauses the sync and blocks further refresh", async () => {
     const connection = await connected();

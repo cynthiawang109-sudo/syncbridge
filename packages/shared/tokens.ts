@@ -133,7 +133,10 @@ export async function accessFor(
       });
     } catch (error) {
       if (!(error instanceof ProviderError)) throw error;
-      if (error.reason === "invalid_grant" || error.status === 0) {
+      if (
+        error.reason === "invalid_grant" ||
+        (error.status === 0 && error.reason !== "provider_unreachable")
+      ) {
         if (await finishFailure(row, "needs_reauth", error.reason))
           throw new ConnectionUnavailable("needs_reauth");
         continue;

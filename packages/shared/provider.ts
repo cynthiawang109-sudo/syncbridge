@@ -38,6 +38,25 @@ function retryDelay(value: string | null) {
   if (/^\d+$/.test(value)) return Number(value) * 1000;
   return Math.max(0, Date.parse(value) - Date.now()) || 0;
 }
+const preDispatchFailures = new Set([
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+function requestFailure(error: unknown) {
+  const cause = error instanceof Error ? error.cause : undefined;
+  const code = (cause as NodeJS.ErrnoException | undefined)?.code;
+  return new ProviderError(
+    0,
+    code && preDispatchFailures.has(code)
+      ? "provider_unreachable"
+      : "provider_transport_uncertain",
+  );
+}
 async function request<T>(path: string, options: RequestInit, timeout: number) {
   try {
     const response = await fetch(provider + path, {
@@ -62,7 +81,7 @@ async function request<T>(path: string, options: RequestInit, timeout: number) {
     return body as T;
   } catch (error) {
     if (error instanceof ProviderError) throw error;
-    throw new ProviderError(0, "provider_transport_uncertain");
+    throw requestFailure(error);
   }
 }
 export async function tokenRequest(form: Record<string, string>) {
