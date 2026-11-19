@@ -81,10 +81,17 @@ try {
   await poll(async () => (await count()) > before);
   compose("kill", "-s", "SIGKILL", "worker");
   stopped = true;
+  await waitEvent(connection, interrupted.id, "leased", 5000);
   await faults({});
   compose("start", "worker");
   stopped = false;
-  await waitEvent(connection, interrupted.id, "processed", 80000);
+  const recovered = await waitEvent(
+    connection,
+    interrupted.id,
+    "processed",
+    80000,
+  );
+  assert.ok(recovered.attempt_count >= 2);
   console.log(
     "Killed the worker during a provider fetch; the sweeper recovered the expired lease",
   );

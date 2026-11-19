@@ -1,4 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { api, mock, json, poll } from "./scenario.mjs";
 
 export const event = (
@@ -54,10 +55,16 @@ export function waitEvent(
   timeout = 15000,
 ) {
   return poll(async () => {
-    const item = await json(
-      "/webhooks/" + connection.id + "/events/" + eventId,
-      connection.token,
-    );
-    return item.status === status ? item : undefined;
+    try {
+      const item = await json(
+        "/webhooks/" + connection.id + "/events/" + eventId,
+        connection.token,
+      );
+      if (item.status === status) return item;
+    } catch (error) {
+      if (!(error instanceof TypeError && error.message === "fetch failed"))
+        throw error;
+    }
+    await sleep(120);
   }, timeout);
 }
