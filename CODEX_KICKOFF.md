@@ -1,42 +1,44 @@
-# SyncBridge — Codex Kickoff: MVP-B
+# SyncBridge — Codex Kickoff: Hardening
 
-**Read this file, then execute ONLY the MVP-B scope below. MVP-A is complete and accepted — do not redo it, and do not break its tests. Stop and report when MVP-B is done. Do not start Hardening (reconciliation) or Stretch.**
+**Read this file, then execute ONLY the Hardening scope below. MVP-A and MVP-B are complete and accepted — do not redo them, and do not break their tests. Stop and report when Hardening is done. Do not start Stretch (CDK / console).**
 
 ## Governing documents
 
-`SPEC.md` in this repo root is the frozen normative contract (SPEC v2.3, frozen 2026-11-18). Everything below is a scope selection from it, not a replacement. If anything here appears to conflict with SPEC.md, SPEC.md wins and you flag the conflict in your report.
+`SPEC.md` in this repo root is the frozen normative contract (SPEC v2.3, frozen 2026-11-18). This kickoff selects the Hardening phase from it. If anything here appears to conflict with SPEC.md, SPEC.md wins and you flag the conflict in your report.
 
-The contracts MVP-B must implement exactly as specified (section names in SPEC.md): Delivery guarantee; Archive event state machine & DLQ ownership (incl. TTL gate, sweeper query model, unified `due_at`); Webhook ingestion (incl. 404 rule and the delete-branch algorithm); Fetched-version semantics; Sync engine retry classification; One retry clock + the persisted `operation_attempt` authority; Global budget / poison-message pause; Dead-letter queue (incl. replay CAS and replay-outlives-archive); Authentication & authorization (replay authorization + audit); Data & privacy caps (archive encryption, 256 KB cap, log redaction).
+The contracts this phase must implement exactly as specified: Reconciliation (incl. snapshot discipline, confirmed vs provisional findings, safe-class-only auto-repair, generation check before any repair write); Observability & limits; the per-phase exit criteria (clean Compose startup, real-dependency tests, recorded/scripted fault-recovery demo).
 
-## MVP-B scope
+## Hardening scope
 
-1. **DynamoDB Local** joins Docker Compose. Implement the `webhook_events` archive exactly per SPEC data model: PK connection_id / SK event_id, encrypted raw body, received_at, processing status, lease_token / lease_expires_at / attempt_count / next_attempt_at, DLQ reference; GSI on status + next_attempt_at; TTL attribute set **only** on terminal states.
-2. **Webhook ingress** (API): raw-byte HMAC verification with constant-time comparison **before** parsing; body size cap 256 KB → 413; timestamp/replay window; dual-secret rotation window; defined rejection codes; no sensitive headers in logs or archive. Conditional archive write (duplicate event id → no second item) → 202 → asynchronous processing only.
-3. **Sweeper / dispatcher**: two bounded GSI queries (due `pending`; expired `leased` per the unified `due_at` definition), primary-table conditional claim (status + lease generation), batch caps, safe multi-instance competition, and the periodic aged-non-terminal audit that re-drives anything the index missed. The queue is derived state; BullMQ's own backoff is **not** a scheduling authority — jobs fire at the persisted `due_at` from `operation_attempt`, and early-fired jobs defer.
-4. **Webhook processing** (worker): fetch-current by ID; ordering by the **fetched snapshot's version** under the three-path version UPSERT; record `event_id` / `event_version` / `fetched_version` metadata; event coalescing per record allowed with metadata preserved; the **delete-branch algorithm** exactly as specified (versioned delete → direct tombstone; non-delete 404 → bounded `unresolved`; unversioned delete → reject + report); connection lifecycle/generation verified in the commit path (closing/deleted connections abort writes).
-5. **DLQ**: `dead_letters` + attempt history in PostgreSQL; non-retryable failures and exhausted retries land here with the provider error payload preserved; **replay API** with the `open → replay_queued → resolved | reopened` state CAS (exactly one active replay), operator-role-only, full audit (actor, time, result, denied attempts); replay reads its evidence from PostgreSQL and tolerates a missing archive item (`archive_absent` in audit).
-6. **Payruns**: second resource type end-to-end on the mock provider (list/get + pagination + snapshot, webhooks, sync), reusing — not duplicating — the employees pipeline.
-7. **Mock provider chaos toggles** (per-test switchable): duplicate webhook delivery, out-of-order delivery, 5xx bursts, latency injection, webhook delivery with tampered signature (for negative tests), silent record mutation (the toggle ships now; its reconciliation consumer arrives in Hardening).
-8. **Offboarding closing protocol** exercised end-to-end per SPEC (F02): CAS to `closing` + generation bump, 410 + audit for inbound webhooks, stale-generation jobs become no-ops, staged deletion, verification scan repeated after the longest lease TTL.
+1. **Reconciliation job** (scheduled trigger + manual trigger, per connection + resource type):
+   - Reads the provider through the **same snapshot-token mechanism** as full sync; diffs mirror vs provider by id + version/payload hash; classifies findings as `missing_locally`, `missing_remotely`, `stale`, `conflicted`.
+   - Findings from a completed stable snapshot traversal are `confirmed`; anything from a partial or invalidated traversal is `provisional` only, is labelled as such in the report, and can never drive a repair.
+   - **Auto-repair is limited to `missing_locally` and `stale`**, executed through the same version-conditional UPSERT as every other writer, and only after verifying the connection's lifecycle status + generation in the commit path. `missing_remotely` is reported, never deleted (the MVP has no absence-based deletion). `conflicted` is reported for human review, never auto-resolved.
+   - Persists `reconciliation_runs` and `reconciliation_findings`; emits a per-run report (API-readable, tenant-scoped, role-checked like everything else).
+   - Repairs schedule through the persisted `operation_attempt` / `due_at` authority, like all other operations.
+2. **Observability pass**: structured metrics/logging for queue lag, sync run duration, retry counts, DLQ depth, 429 rate, token refresh errors — exposed via a simple authenticated metrics/status endpoint (no UI). All log sinks honor the existing redaction list; a leak scan stays in the test suite.
+3. **End-to-end fault-recovery demo** (single script, Compose, offline, deterministic): connect mock provider → full sync of employees + payruns → duplicate and out-of-order webhooks → worker killed mid-processing → 429 burst with `Retry-After` → sweeper recovery → one record forced to DLQ → operator replay → silent mutation injected at the provider → reconciliation run detects and safely repairs the drift → final state verified (mirror versions, DLQ empty, findings report, audit trail). The script prints a step-by-step transcript and fails loudly on any assertion.
+4. **README + case study finalization**: README tells the whole project story with the honest positioning (multi-tenant, single-provider adapter demo); every claim maps to a named test or a demo step — add a traceability table (claim → test/demo). Case study (in `docs/`): the design decisions and their review history in brief — at-least-once/effectively-once, archive-first + sweeper, three-phase refresh fencing, version-ordered application, snapshot discipline — and ADR-001 cross-referenced.
 
-## Tests (MVP-B exit set — all against real Compose dependencies)
+## Tests (Hardening exit set — all against real Compose dependencies)
 
-Freeze-critical: **T01** (archive ok, enqueue fails → sweeper recovers, no duplicate effect), **T02** (commit then crash before ack → no duplicate write/outcome), **T10** (sweeper halted past retry horizon → events intact and recovered; cleanup gate deletes nothing non-terminal), **T11** (crash between DLQ create and archive mark, both directions → converges, no duplicate DLQ), **T18** (two sweepers race one stale event + concurrent worker completion → no state regression), **T23** (leased `due_at` mismatch + stale GSI → still recovered exactly once in effect), **T24** (offboarding race: closing after fetch, before commit + webhook retry → no resurrection, defined rejection + audit).
+- **T08**: silent mutation at the provider → reconciliation detects the drift and safely repairs `stale`/`missing_locally`; a record missing remotely is reported as a finding only — no deletion path exists to trigger.
+- **T29**: provider adds/moves records mid-traversal → no `missing_remotely` is published as `confirmed` from the unstable traversal, and no repair acts on `provisional` findings.
+- Repair safety: a repair attempted against a connection that entered `closing` mid-run aborts on the generation check and is reported, not written.
+- **T17 re-run as the phase gate**: from a clean checkout, `docker compose up` + the full test suite (MVP-A + MVP-B + Hardening) + the end-to-end demo script all run green.
 
-Core: **T04** (V3/V1/V2 same timestamps → V3 wins; equal version different hash → conflict path), **T06** (429/5xx/invalid_grant/permanent-4xx classification + delays), **T07** (DLQ replay success, duplicate replay idempotent, cross-tenant replay rejected + audited), **T09** (tampered signature, expired timestamp, oversized body, old secret in rotation → defined rejections, no leaks), **T16** (log + archive scan finds no token/sensitive-field leakage), **T20** (event V2 fetches V4 → V4 applied, metadata correct), **T21** (two operators, one DLQ entry → one active replay, both attempts audited), **T25** (replay during/after archive TTL → proceeds from PG, `archive_absent` audited), **T27** (delete-branch: versioned delete + 404 → tombstone; update + transient 404 → no deletion; late V5 → rejected), **T28** (sync page, webhook, and repair operations all schedule via persisted `operation_attempt`/`due_at`; duplicates collapse; restart mid-backoff keeps the budget).
-
-All MVP-A tests must still pass. (T08/T29 are Extension tier — Hardening. Do not build reconciliation in this phase.)
+All MVP-A and MVP-B tests must still pass.
 
 ## Exit criteria
 
-- `docker compose up` from a clean checkout brings the full stack (now including DynamoDB Local) up healthy; migrations apply cleanly.
-- Full test suite (MVP-A + MVP-B sets) green.
-- A scripted demo runs: connect → sync employees + payruns → duplicate + out-of-order webhooks converge → kill a worker mid-processing → sweeper recovers → force a record to DLQ → operator replay resolves it.
+- Full suite green from a clean checkout; Compose stack healthy including DynamoDB Local.
+- The end-to-end demo script runs green and its transcript is committed under `docs/` (or linked from the README).
+- README traceability table complete: no claim without a test or demo step.
 - Incremental commits per scope item; working tree clean at the end.
 
 ## Working rules
 
 - All code, comments, docs, commit messages in English.
 - If a SPEC contract seems impossible or contradictory, stop that item, finish the rest, and report the conflict explicitly — never silently weaken an invariant.
-- No reconciliation, no CDK, no console UI in this phase.
-- Final message = completion report: what was built, test results (names + pass/fail), demo output, SPEC conflicts/deviations, final commit hash.
+- No CDK, no console UI, no second provider in this phase.
+- Final message = completion report: what was built, test results (names + pass/fail), demo transcript summary, SPEC conflicts/deviations, final commit hash.
