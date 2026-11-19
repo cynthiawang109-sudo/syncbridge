@@ -157,18 +157,23 @@ export async function archiveItem(connectionId: string, eventId: string) {
 export async function dueEvents(
   status: "pending" | "leased",
   now = Date.now(),
+  cursor?: Record<string, unknown>,
 ) {
   const result = await client.send(
     new QueryCommand({
       TableName,
       IndexName: "status-due_at",
       Limit: 25,
+      ExclusiveStartKey: cursor,
       KeyConditionExpression: "#s = :s AND due_at <= :now",
       ExpressionAttributeNames: { "#s": "status" },
       ExpressionAttributeValues: { ":s": status, ":now": now },
     }),
   );
-  return (result.Items ?? []) as ArchiveItem[];
+  return {
+    items: (result.Items ?? []) as ArchiveItem[],
+    cursor: result.LastEvaluatedKey,
+  };
 }
 export async function claimArchive(item: ArchiveItem, now = Date.now()) {
   const lease = now + ARCHIVE_LEASE_MS;
@@ -178,7 +183,7 @@ export async function claimArchive(item: ArchiveItem, now = Date.now()) {
         TableName,
         Key: key(item.connection_id, item.event_id),
         ConditionExpression:
-          "#s = :old AND lease_generation = :gen AND due_at <= :now AND generation = :connection AND (attribute_not_exists(lease_expires_at) OR lease_expires_at <= :now)",
+          "#s = :old AND lease_generation = :gen AND due_at <= :now AND next_attempt_at = :next AND next_attempt_at <= :now AND generation = :connection AND (attribute_not_exists(lease_expires_at) OR lease_expires_at <= :now)",
         UpdateExpression:
           "SET #s = :new, lease_generation = lease_generation + :one, lease_token = :token, lease_expires_at = :lease, due_at = :due",
         ExpressionAttributeNames: { "#s": "status" },
@@ -192,6 +197,7 @@ export async function claimArchive(item: ArchiveItem, now = Date.now()) {
           ":token": randomUUID(),
           ":lease": lease,
           ":due": Math.max(lease, item.next_attempt_at),
+          ":next": item.next_attempt_at,
         },
         ReturnValues: "ALL_NEW",
       }),

@@ -4,6 +4,9 @@ x-app: &app
     DATABASE_URL: postgresql://syncbridge:syncbridge@postgres:5432/syncbridge
     REDIS_HOST: redis
     DYNAMODB_URL: http://dynamodb:8000
+    WEBHOOK_KEY: ${WEBHOOK_KEY:-local-synthetic-webhook-key}
+    WEBHOOK_PREVIOUS_KEY: ${WEBHOOK_PREVIOUS_KEY:-}
+    WEBHOOK_PREVIOUS_UNTIL: ${WEBHOOK_PREVIOUS_UNTIL:-0}
     PROVIDER_URL: http://mock-provider:3001
     PROVIDER_BROWSER_URL: http://localhost:4301
     CALLBACK_URL: http://localhost:4300/oauth/callback
@@ -15,6 +18,7 @@ x-app: &app
 services:
   dynamodb:
     image: amazon/dynamodb-local:2.6.1
+    user: "0:0"
     command:
       [
         "-jar",
@@ -40,6 +44,7 @@ services:
       retries: 20
   redis:
     image: redis:7
+    ports: ["127.0.0.1:46379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s

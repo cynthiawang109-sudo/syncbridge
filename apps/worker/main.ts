@@ -1,6 +1,7 @@
 import { Worker } from "bullmq";
 import { setTimeout as sleep } from "node:timers/promises";
 import { db } from "../../packages/shared/db";
+import { telemetry } from "../../packages/shared/telemetry";
 import { rewrapTokenBatch } from "../../packages/shared/key-rotation";
 import {
   createQueue,
@@ -10,17 +11,28 @@ import {
 } from "../../packages/shared/queue";
 import { duePages, processPage } from "./sync";
 
+import {
+  dueReplays,
+  processWebhook,
+  projectReplays,
+  sweepWebhooks,
+} from "./webhooks";
+import { closeConnections } from "./offboarding";
 const queue = createQueue();
 const worker = new Worker<PageJob>(
   queueName,
   async (job) => {
-    if (typeof job.data.operationKey === "string")
-      await processPage(job.data.operationKey);
+    if (
+      typeof job.data.operationKey === "string" &&
+      typeof job.data.generation === "number"
+    )
+      if (job.name === "webhook" || job.name === "replay")
+        await processWebhook(job.data);
+      else await processPage(job.data.operationKey, job.data.generation);
   },
   { connection: redisConnection, concurrency: 6 },
 );
-const logError = () =>
-  console.error(JSON.stringify({ event: "sync_transport_error" }));
+const logError = () => telemetry("sync_transport_error", {}, "error");
 worker.on("error", logError);
 worker.on("failed", logError);
 queue.on("error", logError);
@@ -31,15 +43,33 @@ async function dispatch() {
     try {
       const due = await duePages();
       await queue.addBulk(
-        due.map(({ key }) => ({
+        due.map(({ key, generation }) => ({
           name: "page",
-          data: { operationKey: key },
+          data: { operationKey: key, generation: generation ?? undefined },
           opts: { jobId: key },
         })),
       );
+      await sweepWebhooks(queue);
+      await projectReplays();
+      await closeConnections();
+      for (const replay of await dueReplays())
+        await queue.add(
+          "replay",
+          {
+            operationKey: replay.key,
+            generation: replay.generation ?? undefined,
+          },
+          { jobId: replay.key },
+        );
       if (Date.now() >= nextRewrap) {
         nextRewrap = Date.now() + 5000;
         await rewrapTokenBatch();
+        telemetry("worker_status", {
+          dlqDepth: await db.deadLetter.count({
+            where: { state: { in: ["open", "reopened"] } },
+          }),
+          queuedJobs: await queue.getWaitingCount(),
+        });
       }
     } catch {
       logError();

@@ -25,9 +25,15 @@ export function parseEvent(value: unknown): ProviderEvent {
     (event.version ?? 0) > 2147483647
   )
     throw new Error("invalid_event");
-  return event as ProviderEvent;
+  return {
+    id: event.id,
+    resource: event.resource,
+    externalId: event.externalId,
+    action: event.action,
+    version: event.version!,
+  };
 }
-function validId(value: unknown) {
+function validId(value: unknown): value is string {
   return typeof value === "string" && /^[a-zA-Z0-9_-]{1,120}$/.test(value);
 }
 export function webhookSecret(connectionId: string, previous = false) {
