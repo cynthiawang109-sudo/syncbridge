@@ -11,7 +11,8 @@ import {
   Post,
 } from "@nestjs/common";
 import { Caller, deny, Identity } from "./auth";
-import { db } from "../../packages/shared/db";
+import { resumeAttempts } from "../../packages/shared/attempts";
+import { db, lockConnection } from "../../packages/shared/db";
 export const connectionView = {
   id: true,
   tenantId: true,
@@ -20,6 +21,7 @@ export const connectionView = {
   lifecycle: true,
   generation: true,
   tokenStatus: true,
+  pausedReason: true,
   tokenError: true,
   tokenVersion: true,
 } as const;
@@ -140,22 +142,75 @@ export class TenantsController {
     @Param("id") id: string,
   ) {
     await ownConnection(identity, id);
-    await db.connection.updateMany({
-      where: { id, tenantId: identity.tenantId, lifecycle: "active" },
-      data: { lifecycle: "closing", generation: { increment: 1 } },
+    await db.$transaction(async (tx) => {
+      const connection = await lockConnection(tx, id);
+      if (
+        connection?.tenantId !== identity.tenantId ||
+        connection.lifecycle !== "active"
+      )
+        return;
+      await tx.connection.update({
+        where: { id },
+        data: {
+          lifecycle: "closing",
+          generation: { increment: 1 },
+          refreshLeaseUntil: null,
+        },
+      });
+      await tx.operationAttempt.updateMany({
+        where: { connectionId: id, state: { in: ["pending", "claimed"] } },
+        data: {
+          state: "failed",
+          leaseUntil: null,
+          claimToken: null,
+          projectionPending: false,
+        },
+      });
+      await tx.syncRun.updateMany({
+        where: { connectionId: id, status: { in: ["queued", "running"] } },
+        data: { status: "failed", error: "connection_closing" },
+      });
+      await tx.deadLetter.updateMany({
+        where: { connectionId: id, state: "replay_queued" },
+        data: { state: "reopened" },
+      });
+      await tx.authorizationAudit.create({
+        data: {
+          actor: identity.actor,
+          object: id,
+          reason: "connection_closing",
+        },
+      });
     });
-    await db.connection.updateMany({
-      where: { id, tenantId: identity.tenantId, lifecycle: "closing" },
-      data: {
-        lifecycle: "deleted",
-        encryptedTokens: null,
-        keyVersion: null,
-        oauthStateHash: null,
-        oauthVerifier: null,
-        tokenStatus: "disconnected",
-      },
+    return { lifecycle: "closing" };
+  }
+  @Post("connections/:id/resume")
+  async resumeConnection(
+    @Caller() identity: Identity,
+    @Param("id") id: string,
+  ) {
+    await ownConnection(identity, id);
+    await db.$transaction(async (tx) => {
+      const connection = await lockConnection(tx, id);
+      if (
+        connection?.tenantId !== identity.tenantId ||
+        connection.lifecycle !== "active" ||
+        connection.tokenStatus !== "connected"
+      ) {
+        throw new ConflictException("Connection cannot resume");
+      }
+      await tx.connection.update({
+        where: { id },
+        data: {
+          pausedReason: null,
+          rateUntil: null,
+          failureStreak: 0,
+          rateStreak: 0,
+        },
+      });
+      if (connection.pausedReason) await resumeAttempts(tx, id);
     });
-    return { deleted: true };
+    return ownConnection(identity, id);
   }
   @Get("connections/:id/records")
   async records(@Caller() identity: Identity, @Param("id") id: string) {
