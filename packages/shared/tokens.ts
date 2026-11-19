@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { Connection, Prisma } from "@prisma/client";
 import { db, lockConnection } from "./db";
 import { Envelope } from "./crypto";
+import { telemetry } from "./telemetry";
 import {
   ProviderError,
   REFRESH_TIMEOUT,
@@ -66,16 +67,8 @@ async function finishFailure(
     where: fence(row),
     data: { tokenStatus: status, tokenError: reason, refreshLeaseUntil: null },
   });
-  if (updated.count && status !== "connected") {
-    console.info(
-      JSON.stringify({
-        event: "token_refresh_state",
-        connectionId: row.id,
-        status,
-        reason,
-      }),
-    );
-  }
+  if (updated.count)
+    telemetry("token_refresh_error", { connectionId: row.id, status, reason });
   return updated.count > 0;
 }
 function openUsable(row: Connection) {

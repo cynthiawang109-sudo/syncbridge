@@ -143,6 +143,20 @@ const indexCursors: Partial<
   Record<"pending" | "leased", Record<string, unknown>>
 > = {};
 let nextAudit = 0;
+async function recoverReceipt(
+  item: ArchiveItem,
+  queue: ReturnType<typeof createQueue>,
+) {
+  try {
+    await dispatchArchiveItem(item, queue);
+  } catch {
+    telemetry(
+      "archive_dispatch_failed",
+      { connectionId: item.connection_id, eventId: item.event_id },
+      "warn",
+    );
+  }
+}
 export async function sweepWebhooks(
   queue: ReturnType<typeof createQueue>,
   now = Date.now(),
@@ -154,7 +168,7 @@ export async function sweepWebhooks(
   indexCursors.pending = pending.cursor;
   indexCursors.leased = leased.cursor;
   for (const item of [...pending.items, ...leased.items])
-    await dispatchArchiveItem(item, queue);
+    await recoverReceipt(item, queue);
   if (now >= nextAudit) {
     const batch = await archiveAudit(auditCursor, now);
     auditCursor = batch.cursor;
@@ -168,7 +182,7 @@ export async function sweepWebhooks(
             eventId: item.event_id,
           }),
         );
-        await dispatchArchiveItem(item, queue);
+        await recoverReceipt(item, queue);
       } else await expireArchiveItem(item, now);
     }
   }

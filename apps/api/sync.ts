@@ -35,7 +35,8 @@ export class SyncController {
       if (
         connection?.tenantId !== identity.tenantId ||
         connection.lifecycle !== "active" ||
-        connection.tokenStatus !== "connected"
+        connection.tokenStatus !== "connected" ||
+        connection.pausedReason
       ) {
         throw new ConflictException("Connection cannot sync");
       }
