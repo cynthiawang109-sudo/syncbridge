@@ -14,7 +14,7 @@ npm ci
 npm run generate
 npm test
 npm run lint
-npm run demo:hardening
+node scripts/demo-hardening.mjs
 ```
 
 Compose exposes the API on loopback port 4300, the mock provider on 4301, PostgreSQL on 45432, Redis on 46379, and DynamoDB Local on 4800. Tests and the demo use these real dependencies. The demo uses a dedicated local stack because it kills and restarts the worker. It makes no calls to external providers. See the [verified demo transcript](docs/hardening-demo.txt).
