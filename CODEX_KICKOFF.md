@@ -1,44 +1,45 @@
-# SyncBridge — Codex Kickoff: Hardening
+# SyncBridge — Codex Kickoff: Stretch (CDK deploy + read-only console)
 
-**Read this file, then execute ONLY the Hardening scope below. MVP-A and MVP-B are complete and accepted — do not redo them, and do not break their tests. Stop and report when Hardening is done. Do not start Stretch (CDK / console).**
+**Read this file, then execute ONLY the Stretch scope below. MVP-A, MVP-B, and Hardening are complete and accepted — do not redo them, and do not break their tests. Stop and report when Stretch is done. This is the final phase.**
 
 ## Governing documents
 
-`SPEC.md` in this repo root is the frozen normative contract (SPEC v2.3, frozen 2026-11-18). This kickoff selects the Hardening phase from it. If anything here appears to conflict with SPEC.md, SPEC.md wins and you flag the conflict in your report.
+`SPEC.md` in this repo root is the frozen normative contract (SPEC v2.3, frozen 2026-11-18). Stretch items per SPEC: the CDK deployment slice with per-service boundaries (P2-12), and the thin read-only ops console. If anything here appears to conflict with SPEC.md, SPEC.md wins and you flag the conflict in your report.
 
-The contracts this phase must implement exactly as specified: Reconciliation (incl. snapshot discipline, confirmed vs provisional findings, safe-class-only auto-repair, generation check before any repair write); Observability & limits; the per-phase exit criteria (clean Compose startup, real-dependency tests, recorded/scripted fault-recovery demo).
+## Preflight (do this first, before writing CDK code)
 
-## Hardening scope
+1. Check AWS access from this machine: `aws sts get-caller-identity` (and note the account + region; default to `ca-central-1` unless the account is clearly set up elsewhere — record which you used).
+2. **If no valid AWS credentials exist, STOP.** Do not create accounts, keys, or users. Report exactly what is missing and end the run — the console portion (below) may still be completed and reported separately.
+3. Produce a pre-deploy cost estimate for the stack below at demo scale (smallest instance classes, single AZ, no NAT gateway if avoidable — use public subnets with security groups, or document why not) and write it into `docs/cdk-deploy.md` **before** deploying. The expected order of magnitude is a few dollars for a same-day deploy + teardown. If the estimate exceeds ~US$25 for the demonstration window, stop and report instead of deploying.
 
-1. **Reconciliation job** (scheduled trigger + manual trigger, per connection + resource type):
-   - Reads the provider through the **same snapshot-token mechanism** as full sync; diffs mirror vs provider by id + version/payload hash; classifies findings as `missing_locally`, `missing_remotely`, `stale`, `conflicted`.
-   - Findings from a completed stable snapshot traversal are `confirmed`; anything from a partial or invalidated traversal is `provisional` only, is labelled as such in the report, and can never drive a repair.
-   - **Auto-repair is limited to `missing_locally` and `stale`**, executed through the same version-conditional UPSERT as every other writer, and only after verifying the connection's lifecycle status + generation in the commit path. `missing_remotely` is reported, never deleted (the MVP has no absence-based deletion). `conflicted` is reported for human review, never auto-resolved.
-   - Persists `reconciliation_runs` and `reconciliation_findings`; emits a per-run report (API-readable, tenant-scoped, role-checked like everything else).
-   - Repairs schedule through the persisted `operation_attempt` / `due_at` authority, like all other operations.
-2. **Observability pass**: structured metrics/logging for queue lag, sync run duration, retry counts, DLQ depth, 429 rate, token refresh errors — exposed via a simple authenticated metrics/status endpoint (no UI). All log sinks honor the existing redaction list; a leak scan stays in the test suite.
-3. **End-to-end fault-recovery demo** (single script, Compose, offline, deterministic): connect mock provider → full sync of employees + payruns → duplicate and out-of-order webhooks → worker killed mid-processing → 429 burst with `Retry-After` → sweeper recovery → one record forced to DLQ → operator replay → silent mutation injected at the provider → reconciliation run detects and safely repairs the drift → final state verified (mirror versions, DLQ empty, findings report, audit trail). The script prints a step-by-step transcript and fails loudly on any assertion.
-4. **README + case study finalization**: README tells the whole project story with the honest positioning (multi-tenant, single-provider adapter demo); every claim maps to a named test or a demo step — add a traceability table (claim → test/demo). Case study (in `docs/`): the design decisions and their review history in brief — at-least-once/effectively-once, archive-first + sweeper, three-phase refresh fencing, version-ordered application, snapshot discipline — and ADR-001 cross-referenced.
+## Scope
 
-## Tests (Hardening exit set — all against real Compose dependencies)
+1. **CDK stack (TypeScript, `infra/` in this repo)** — exactly the SPEC boundaries:
+   - **API Fargate service** behind an ALB (health check on the API's health endpoint).
+   - **Worker Fargate service**, separate service, **no ALB**.
+   - RDS PostgreSQL (smallest class, single AZ, demo-grade backup retention = 0/1 day), ElastiCache Redis (smallest node), DynamoDB table with the status GSI (on-demand billing), EventBridge schedule that invokes the API's enqueue endpoint for reconciliation (no extra Lambda unless you document why it is required).
+   - Secrets (DB credentials, JWT signing key, token-encryption key, webhook secrets) via Secrets Manager / SSM — never plaintext in task definitions or code.
+   - The mock provider runs as a third Fargate service in the demo stack so the deployed demo is self-contained (it is a demo counterpart, labelled as such).
+   - All resources tagged `project=syncbridge`, `ephemeral=true`.
+2. **Demonstrated deploy**: `cdk synth` + `cdk diff` clean and committed as outputs in `docs/cdk-deploy.md`; deploy once; run a smoke pass against the deployed ALB endpoint (health → OAuth connect against the deployed mock → one sync → one webhook → mirror check); record the transcript and the actual cost incurred (from the AWS console/cost explorer if available, else the estimate) in `docs/cdk-deploy.md`.
+3. **Teardown in the same run**: `cdk destroy`, then a residual-resource check (list any syncbridge-tagged resources still present — RDS snapshots, log groups, ECR images, secrets) and delete/document them. The deliverable is the demonstrated, torn-down artifact — nothing stays running.
+4. **Read-only ops console**: the thinnest possible server-rendered pages served by the API app (no separate frontend build): connections list, sync run history, DLQ list, reconciliation run reports. Read-only — no replay or mutation actions in the UI (replay stays API-only per SPEC). Same JWT auth + tenant scoping + role checks as the API (viewer role is the intended audience). No design work; semantic HTML and a table layout are fine.
 
-- **T08**: silent mutation at the provider → reconciliation detects the drift and safely repairs `stale`/`missing_locally`; a record missing remotely is reported as a finding only — no deletion path exists to trigger.
-- **T29**: provider adds/moves records mid-traversal → no `missing_remotely` is published as `confirmed` from the unstable traversal, and no repair acts on `provisional` findings.
-- Repair safety: a repair attempted against a connection that entered `closing` mid-run aborts on the generation check and is reported, not written.
-- **T17 re-run as the phase gate**: from a clean checkout, `docker compose up` + the full test suite (MVP-A + MVP-B + Hardening) + the end-to-end demo script all run green.
+## Tests / verification
 
-All MVP-A and MVP-B tests must still pass.
+- All existing tests (MVP-A + MVP-B + Hardening, 34) still pass locally; console endpoints covered by tenant-scope/viewer-role tests in the same style.
+- `cdk synth` succeeds in CI-less local run; the smoke transcript and teardown verification are committed under `docs/`.
+- T17 discipline still holds: clean checkout → Compose up → full suite green (the CDK work must not disturb the local path).
 
 ## Exit criteria
 
-- Full suite green from a clean checkout; Compose stack healthy including DynamoDB Local.
-- The end-to-end demo script runs green and its transcript is committed under `docs/` (or linked from the README).
-- README traceability table complete: no claim without a test or demo step.
+- `docs/cdk-deploy.md` contains: preflight identity/region, cost estimate, synth/diff summary, smoke transcript, actual cost, teardown + residual check results. **Or**, if preflight failed, a precise report of what is missing (console still delivered).
+- Console pages live behind auth, tenant-scoped, read-only, covered by tests.
 - Incremental commits per scope item; working tree clean at the end.
 
 ## Working rules
 
 - All code, comments, docs, commit messages in English.
-- If a SPEC contract seems impossible or contradictory, stop that item, finish the rest, and report the conflict explicitly — never silently weaken an invariant.
-- No CDK, no console UI, no second provider in this phase.
-- Final message = completion report: what was built, test results (names + pass/fail), demo transcript summary, SPEC conflicts/deviations, final commit hash.
+- Never commit AWS credentials, account IDs in code (docs may record the region and instance classes; mask the account ID), or secrets of any kind.
+- If a SPEC contract seems impossible or contradictory, stop that item, finish the rest, and report the conflict explicitly.
+- Final message = completion report: preflight result, what was built, deploy/smoke/teardown outcome with costs, test results, SPEC conflicts/deviations, final commit hash.
