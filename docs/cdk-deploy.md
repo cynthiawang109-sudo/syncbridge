@@ -39,3 +39,39 @@ Synthetic provider    1
 EventBridge Scheduler starts a one-off Fargate task that calls the private API enqueue route with an injected scheduler secret. The public ALB blocks that route. VPC private DNS connects the API and mock service to the worker. The operator smoke client pins the temporary ACM certificate. The synthetic provider's public allowlist covers authorization and the fixture-delivery route. Its token and resource endpoints stay inside the VPC.
 
 ECS injects Secrets Manager references. A dedicated KMS key protects the envelope wrapping key in Secrets Manager. The application wraps payload data keys with that injected, versioned key. The KMS key is scheduled for deletion when the stack is destroyed.
+
+## Deploy and smoke pass
+
+One `cdk deploy SyncBridgeDemo` reached `CREATE_COMPLETE` in `ca-central-1` at 04:15:11 UTC on November 19, 2026 (23:15:11 Eastern on November 18). CDK reported 667.15 seconds for deployment and 1,655.31 seconds total, including asset preparation and publication.
+
+~~~text
+ALB HTTPS health returned HTTP 200
+OAuth authorization code and PKCE completed against the deployed synthetic provider
+Full employee sync succeeded with five verified mirror versions
+The provider delivered one signed webhook, the archive reached processed, and the mirror advanced to version 7
+EventBridge Scheduler launched the one-off Fargate task and the private API returned HTTP 202.
+~~~
+
+## Teardown and residual checks
+
+The demo schedule was stopped and its task drained before `cdk destroy SyncBridgeDemo` reported `SyncBridgeDemo: destroyed`. The main stack and temporary ACM certificate were confirmed absent. The dedicated bootstrap stack, ECR repository and its one image, versioned S3 asset bucket, and bootstrap SSM parameter were removed and confirmed absent.
+
+| Post-destroy check | Result |
+| --- | --- |
+| PostgreSQL instance and manual snapshots | Instance absent and zero manual snapshots |
+| CloudWatch log groups | Zero demo log groups |
+| Secrets Manager | All six demo secrets absent |
+| KMS envelope key | `PendingDeletion`, scheduled for November 26, 2026 at 04:26 UTC |
+| ECS cluster and services | One inactive cluster and three inactive services, with zero desired, running or pending tasks |
+| ECS task history and definitions | All 16 tagged tasks confirmed stopped. All four task-definition revisions were explicitly deleted. ECS returned zero active, inactive, or deleting revisions afterward. |
+| EC2 subnet | The last subnet listed by the tag inventory returned `InvalidSubnetID.NotFound` from EC2. |
+
+The final tag query at 04:37:07 UTC still listed 26 entries. Direct service checks accounted for all 26 as the pending KMS key, inactive ECS cluster and three services, 16 stopped tasks, four removed task definitions, and one deleted subnet. No demo workloads remained running.
+
+## Demonstration cost
+
+The deployment and stack cleanup took 49 minutes, with residual checks complete in about 51 minutes. Applying the preflight rate to 51 minutes plus the flat service allowance gives an estimated **US$1.70**. Cost Explorer did not have an active project billing tag for attribution, so this figure is a planning estimate.
+
+## Local regression verification
+
+All 36 tests passed in a fresh Compose project after the image build completed. The first run overlapped the image build and recorded a closed socket in T23. T23 passed on the full rerun. The Hardening recovery demo also passed, including worker restart and lease recovery, operator replay, and reconciliation. The original local Compose project was restored.
