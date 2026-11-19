@@ -13,7 +13,8 @@
     "generate": "prisma generate",
     "demo": "node scripts/demo.mjs",
     "pretest": "npm run build && tsc -p tsconfig.test.json",
-    "demo:recovery": "node scripts/demo-recovery.mjs"
+    "demo:recovery": "node scripts/demo-recovery.mjs",
+    "demo:mvp-b": "node scripts/demo-mvp-b.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.1172.0",
