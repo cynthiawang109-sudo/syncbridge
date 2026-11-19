@@ -90,10 +90,12 @@ let refreshCalls = 0;
 let listCalls = 0;
 let getCalls = 0;
 async function resourceFault(reply: FastifyReply) {
-  if (faults.latencyMs) await sleep(Math.min(3500, faults.latencyMs));
-  if (rateLimited(reply)) return true;
-  if ((faults.burst ?? 0) > 0) {
-    faults.burst!--;
+  const requestFaults = faults;
+  if (requestFaults.latencyMs)
+    await sleep(Math.min(3500, requestFaults.latencyMs));
+  if (rateLimited(reply, requestFaults)) return true;
+  if ((requestFaults.burst ?? 0) > 0) {
+    requestFaults.burst!--;
     reply.code(503).send({ error: "synthetic_burst" });
     return true;
   }
@@ -119,14 +121,14 @@ function validAccess(header?: string) {
     Date.now()
   );
 }
-function rateLimited(reply: FastifyReply) {
-  if (!faults.rateLimit) return false;
+function rateLimited(reply: FastifyReply, requestFaults: Faults) {
+  if (!requestFaults.rateLimit) return false;
   const retryAfter =
-    faults.rateLimit === "delta"
+    requestFaults.rateLimit === "delta"
       ? "1"
       : new Date(Math.ceil(Date.now() / 1000) * 1000 + 1000).toUTCString();
-  faults.rateLimitCount = (faults.rateLimitCount ?? 1) - 1;
-  if (faults.rateLimitCount <= 0) delete faults.rateLimit;
+  requestFaults.rateLimitCount = (requestFaults.rateLimitCount ?? 1) - 1;
+  if (requestFaults.rateLimitCount <= 0) delete requestFaults.rateLimit;
   reply
     .header("Retry-After", retryAfter)
     .code(429)
