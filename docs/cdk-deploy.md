@@ -21,3 +21,21 @@ Budget **US$4.00 for a six-hour demo**, including contingency. The same assumpti
 The hourly allowances round up rather than claiming an exact regional quote. Fargate tasks use public subnets with security groups and outbound access for image pulls and AWS APIs. PostgreSQL and Redis use isolated subnets. The ALB uses two AZs as required. The database and cache each have one node. No NAT gateway is required.
 
 Pricing references: [Fargate](https://aws.amazon.com/fargate/pricing/), [ALB](https://aws.amazon.com/elasticloadbalancing/pricing/), [IPv4](https://aws.amazon.com/vpc/pricing/), [RDS PostgreSQL](https://aws.amazon.com/rds/postgresql/pricing/), [ElastiCache](https://aws.amazon.com/elasticache/pricing/), [DynamoDB](https://aws.amazon.com/dynamodb/pricing/), [Secrets Manager](https://aws.amazon.com/secrets-manager/pricing/), and [EventBridge](https://aws.amazon.com/eventbridge/pricing/).
+
+## Bootstrap, synth and diff
+
+The default CDK toolkit stack was absent. CDK bootstrapped the dedicated `SyncBridgeDemoToolkit` stack with qualifier `syncbdemo` and the project and ephemeral tags. No deployment or lookup trustees were added.
+
+The TypeScript check and `cdk synth SyncBridgeDemo` exited successfully. The template contains 77 CloudFormation resources. The three ECS services have these ALB attachments:
+
+~~~text
+API                   1
+Worker                0
+Synthetic provider    1
+~~~
+
+`cdk diff SyncBridgeDemo --method template` exited successfully and reported one new stack. The diff contained 83 addition lines, including parameters and outputs, with zero modification or removal lines. The additions included a single HTTPS ALB listener, two target groups, one PostgreSQL instance, one Redis replication group, one on-demand DynamoDB table, and one EventBridge schedule.
+
+EventBridge Scheduler starts a one-off Fargate task that calls the private API enqueue route with an injected scheduler secret. The public ALB blocks that route. VPC private DNS connects the API and mock service to the worker. The operator smoke client pins the temporary ACM certificate. The synthetic provider's public allowlist covers authorization and the fixture-delivery route. Its token and resource endpoints stay inside the VPC.
+
+ECS injects Secrets Manager references. A dedicated KMS key protects the envelope wrapping key in Secrets Manager. The application wraps payload data keys with that injected, versioned key. The KMS key is scheduled for deletion when the stack is destroyed.
