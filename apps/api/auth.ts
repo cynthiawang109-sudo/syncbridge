@@ -97,6 +97,10 @@ export class AuthGuard implements CanActivate {
       throw new ForbiddenException();
     }
     if (
+      !this.reflector.get<boolean>(
+        "authorize_in_handler",
+        context.getHandler(),
+      ) &&
       !["GET", "HEAD"].includes(request.method) &&
       identity.role !== "operator"
     ) {

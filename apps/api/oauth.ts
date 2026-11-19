@@ -13,7 +13,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { Caller, Identity, Public } from "./auth";
 import { connectionView, ownConnection } from "./tenants";
 import { db } from "../../packages/shared/db";
-import { attemptDelay } from "../../packages/shared/attempts";
+import { resumeAttempts } from "../../packages/shared/attempts";
 import {
   browserProvider,
   callback,
@@ -49,7 +49,7 @@ export class OAuthController {
       state,
       client_id: "syncbridge",
       response_type: "code",
-      scope: "employees:read",
+      scope: "employees:read payruns:read",
       redirect_uri: callback,
       code_challenge_method: "S256",
       code_challenge: hash(verifier),
@@ -111,32 +111,7 @@ export class OAuthController {
       });
       if (!saved.count)
         throw new ConflictException("Connection changed during OAuth exchange");
-      const paused = await tx.operationAttempt.findMany({
-        where: {
-          state: "pending",
-          pausedAt: { not: null },
-          run: { connectionId: row.id, status: "running" },
-        },
-      });
-      const now = Date.now();
-      for (const attempt of paused) {
-        if (!attempt.pausedAt) continue;
-        const duration = now - attempt.pausedAt.getTime();
-        await tx.operationAttempt.update({
-          where: { key: attempt.key },
-          data: {
-            createdAt: new Date(attempt.createdAt.getTime() + duration),
-            dueAt: new Date(
-              now +
-                Math.max(
-                  attemptDelay(attempt.attemptCount),
-                  attempt.dueAt.getTime() - attempt.pausedAt.getTime(),
-                ),
-            ),
-            pausedAt: null,
-          },
-        });
-      }
+      if (!row.pausedReason) await resumeAttempts(tx, row.id);
       return tx.connection.findUniqueOrThrow({
         where: { id: row.id },
         select: connectionView,

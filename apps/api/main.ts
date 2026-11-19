@@ -2,6 +2,7 @@ import "reflect-metadata";
 import { raw } from "express";
 import { initArchive } from "../../packages/shared/archive";
 import { webhookLimit } from "../../packages/shared/events";
+import { DeadLettersController } from "./dead-letters";
 import { WebhooksController } from "./webhooks";
 import { Controller, Get, Module } from "@nestjs/common";
 import { APP_GUARD, NestFactory } from "@nestjs/core";
@@ -24,6 +25,7 @@ class HealthController {
     OAuthController,
     SyncController,
     WebhooksController,
+    DeadLettersController,
   ],
   providers: [{ provide: APP_GUARD, useClass: AuthGuard }],
 })
