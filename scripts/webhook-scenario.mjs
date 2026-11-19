@@ -46,8 +46,13 @@ async function mockWrite(path, method, body) {
   return res.json();
 }
 export const faults = (body) => mockWrite("/__test/faults", "PATCH", body);
-export const mutate = (connectionId, events, changes = []) =>
-  mockWrite("/__test/events", "POST", { connectionId, events, changes });
+export const mutate = (connectionId, events, changes = [], options = {}) =>
+  mockWrite("/__test/events", "POST", {
+    connectionId,
+    events,
+    changes,
+    ...options,
+  });
 export function waitEvent(
   connection,
   eventId,

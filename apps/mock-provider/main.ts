@@ -66,6 +66,7 @@ const access = new Map<string, Session>();
 const snapshots = new Map<string, Snapshot>();
 const cursors = new Map<string, Cursor>();
 type Faults = {
+  rateLimitCount?: number;
   rateLimit?: "delta" | "date";
   failPage?: number;
   expireAccess?: boolean;
@@ -124,7 +125,8 @@ function rateLimited(reply: FastifyReply) {
     faults.rateLimit === "delta"
       ? "1"
       : new Date(Math.ceil(Date.now() / 1000) * 1000 + 1000).toUTCString();
-  delete faults.rateLimit;
+  faults.rateLimitCount = (faults.rateLimitCount ?? 1) - 1;
+  if (faults.rateLimitCount <= 0) delete faults.rateLimit;
   reply
     .header("Retry-After", retryAfter)
     .code(429)
@@ -340,15 +342,25 @@ app.post<{
     connectionId: string;
     events: ProviderEvent[];
     changes?: Array<{ resource: Resource; row: Employee }>;
+    remove?: Array<{ resource: Resource; externalId: string }>;
+    invalidateSnapshots?: boolean;
   };
 }>("/__test/events", async (req, reply) => {
-  const { connectionId, events, changes = [] } = req.body;
+  const {
+    connectionId,
+    events,
+    changes = [],
+    remove = [],
+    invalidateSnapshots,
+  } = req.body;
   if (
     !/^[a-zA-Z0-9_-]{1,120}$/.test(connectionId) ||
     !Array.isArray(events) ||
     events.length > 25 ||
     !Array.isArray(changes) ||
-    changes.length > 25
+    changes.length > 25 ||
+    !Array.isArray(remove) ||
+    remove.length > 25
   ) {
     return reply.code(400).send({ error: "invalid_fixture" });
   }
@@ -369,6 +381,17 @@ app.post<{
     if (index < 0) rows.push(saved);
     else rows[index] = saved;
   }
+  for (const { resource, externalId } of remove) {
+    if (!isResource(resource) || typeof externalId !== "string")
+      return reply.code(400).send({ error: "invalid_fixture" });
+    const rows = resources[resource];
+    const index = rows.findIndex((row) => row.id === externalId);
+    if (index >= 0) {
+      rows.splice(index, 1);
+      revisions[resource]++;
+    }
+  }
+  if (invalidateSnapshots) snapshots.clear();
   const statuses: number[] = [];
   if (!faults.silent) {
     const target = process.env.WEBHOOK_TARGET ?? "http://api:3000";
