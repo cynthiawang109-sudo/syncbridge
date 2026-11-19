@@ -42,22 +42,30 @@ function open(key: Buffer, ciphertext: string, context: string) {
 export class Envelope {
   constructor(private readonly keys: KeyProvider = new LocalKeyProvider()) {}
   encrypt(value: unknown, context: string) {
+    return this.encryptBytes(Buffer.from(JSON.stringify(value)), context);
+  }
+  encryptBytes(value: Buffer, context: string) {
     const keyVersion = this.keys.currentVersion;
     const dek = randomBytes(32);
     return {
       keyVersion,
       encryptedTokens: JSON.stringify({
         wrappedKey: seal(this.keys.key(keyVersion), dek, context + ":key"),
-        data: seal(dek, Buffer.from(JSON.stringify(value)), context + ":data"),
+        data: seal(dek, value, context + ":data"),
       }),
     };
   }
   decrypt<T>(encrypted: string, keyVersion: string, context: string): T {
+    return JSON.parse(
+      this.decryptBytes(encrypted, keyVersion, context).toString(),
+    ) as T;
+  }
+  decryptBytes(encrypted: string, keyVersion: string, context: string) {
     const { wrappedKey, data } = JSON.parse(encrypted) as {
       wrappedKey: string;
       data: string;
     };
     const dek = open(this.keys.key(keyVersion), wrappedKey, context + ":key");
-    return JSON.parse(open(dek, data, context + ":data").toString()) as T;
+    return open(dek, data, context + ":data");
   }
 }

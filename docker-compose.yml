@@ -3,6 +3,7 @@ x-app: &app
   environment:
     DATABASE_URL: postgresql://syncbridge:syncbridge@postgres:5432/syncbridge
     REDIS_HOST: redis
+    DYNAMODB_URL: http://dynamodb:8000
     PROVIDER_URL: http://mock-provider:3001
     PROVIDER_BROWSER_URL: http://localhost:4301
     CALLBACK_URL: http://localhost:4300/oauth/callback
@@ -12,6 +13,18 @@ x-app: &app
     PREVIOUS_ENVELOPE_KEYS: ${PREVIOUS_ENVELOPE_KEYS:-}
 
 services:
+  dynamodb:
+    image: amazon/dynamodb-local:2.6.1
+    command:
+      [
+        "-jar",
+        "DynamoDBLocal.jar",
+        "-sharedDb",
+        "-dbPath",
+        "/home/dynamodblocal/data",
+      ]
+    ports: ["127.0.0.1:4800:8000"]
+    volumes: [archive-data:/home/dynamodblocal/data]
   postgres:
     image: postgres:16
     environment:
@@ -86,3 +99,4 @@ services:
     ports: ["127.0.0.1:4301:3001"]
 volumes:
   postgres-data:
+  archive-data:
