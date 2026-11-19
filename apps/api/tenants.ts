@@ -1,3 +1,4 @@
+import { abortReconciliation } from "../../packages/shared/reconciliation";
 import {
   BadRequestException,
   Body,
@@ -170,6 +171,7 @@ export class TenantsController {
         where: { connectionId: id, status: { in: ["queued", "running"] } },
         data: { status: "failed", error: "connection_closing" },
       });
+      await abortReconciliation(tx, id);
       await tx.deadLetter.updateMany({
         where: { connectionId: id, state: "replay_queued" },
         data: { state: "reopened" },

@@ -2,13 +2,7 @@ import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import type { Employee } from "./provider";
 
-export async function upsertMirror(
-  tx: Prisma.TransactionClient,
-  connectionId: string,
-  resourceType: string,
-  row: Employee,
-  tombstone = false,
-) {
+export function mirrorPayload(row: Employee, tombstone = false) {
   const payload = JSON.stringify(
     tombstone
       ? { id: row.id, version: row.version, deleted: true }
@@ -20,6 +14,16 @@ export async function upsertMirror(
         },
   );
   const hash = createHash("sha256").update(payload).digest("hex");
+  return { payload, hash };
+}
+export async function upsertMirror(
+  tx: Prisma.TransactionClient,
+  connectionId: string,
+  resourceType: string,
+  row: Employee,
+  tombstone = false,
+) {
+  const { payload, hash } = mirrorPayload(row, tombstone);
   const applied = await tx.$queryRaw<{ version: number }[]>`
     INSERT INTO external_records (connection_id, resource_type, external_id, version, payload_hash, payload, tombstone, last_synced_at)
     VALUES (${connectionId}, ${resourceType}, ${row.id}, ${row.version}, ${hash}, ${payload}::jsonb, ${tombstone}, CURRENT_TIMESTAMP)
