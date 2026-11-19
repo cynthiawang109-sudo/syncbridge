@@ -1,0 +1,15 @@
+SyncBridge Hardening verification
+Clean checkout fdbe1d6be27bdefb3fffbcadf76384379dce2cf8
+Compose reported all six services ready and applied five Prisma migrations.
+The full Compose integration suite passed all 34 tests. Lint and TypeScript checks passed.
+
+$ node scripts/demo-hardening.mjs
+OAuth connected and synced 5 employees and 3 payruns
+Four duplicate and out-of-order deliveries converged to payrun version 4
+Armed a two-response HTTP 429 burst with Retry-After before restarting the worker
+Two HTTP 429 responses were recorded and the delivery completed on attempt 4
+Killed the worker during a provider fetch; the sweeper recovered the expired lease
+A provider HTTP 400 created a dead letter; operator replay resolved it
+Silently changed one employee at the provider and added one provider-only employee
+Stable snapshot confirmed and repaired stale and missing_locally findings
+Verified nine mirror versions, zero outstanding dead letters, and the operator replay audit
