@@ -260,6 +260,7 @@ function service(
     assignPublicIp: true,
     vpcSubnets: publicSubnets,
     desiredCount: 1,
+    minHealthyPercent: 100,
     propagateTags: ecs.PropagatedTagSource.SERVICE,
     circuitBreaker: { rollback: true },
     ...(discovery
