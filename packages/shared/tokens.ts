@@ -68,7 +68,11 @@ async function finishFailure(
     data: { tokenStatus: status, tokenError: reason, refreshLeaseUntil: null },
   });
   if (updated.count)
-    telemetry("token_refresh_error", { connectionId: row.id, status, reason });
+    telemetry(
+      "token_refresh_error",
+      { connectionId: row.id, status, reason },
+      "warn",
+    );
   return updated.count > 0;
 }
 function openUsable(row: Connection) {
