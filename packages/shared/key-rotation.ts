@@ -1,6 +1,7 @@
 import { db } from "./db";
 import { Envelope, LocalKeyProvider } from "./crypto";
 import { Tokens } from "./provider";
+import { telemetry } from "./telemetry";
 
 const keys = new LocalKeyProvider();
 const envelope = new Envelope(keys);
@@ -36,9 +37,7 @@ export async function rewrapTokenBatch() {
         data: envelope.encrypt(value, row.id),
       });
     } catch {
-      console.error(
-        JSON.stringify({ event: "token_rewrap_failed", connectionId: row.id }),
-      );
+      telemetry("token_rewrap_failed", { connectionId: row.id }, "error");
     }
   }
 }

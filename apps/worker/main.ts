@@ -1,3 +1,8 @@
+import {
+  dueReconciliation,
+  processReconciliation,
+  scheduleReconciliation,
+} from "./reconciliation";
 import { Worker } from "bullmq";
 import { setTimeout as sleep } from "node:timers/promises";
 import { db } from "../../packages/shared/db";
@@ -26,7 +31,9 @@ const worker = new Worker<PageJob>(
       typeof job.data.operationKey === "string" &&
       typeof job.data.generation === "number"
     )
-      if (job.name === "webhook" || job.name === "replay")
+      if (job.name === "reconciliation")
+        await processReconciliation(job.data.operationKey, job.data.generation);
+      else if (job.name === "webhook" || job.name === "replay")
         await processWebhook(job.data);
       else await processPage(job.data.operationKey, job.data.generation);
   },
@@ -39,6 +46,7 @@ queue.on("error", logError);
 let stopping = false;
 async function dispatch() {
   let nextRewrap = 0;
+  let nextMetricsCleanup = 0;
   while (!stopping) {
     try {
       const due = await duePages();
@@ -46,6 +54,13 @@ async function dispatch() {
         due.map(({ key, generation }) => ({
           name: "page",
           data: { operationKey: key, generation: generation ?? undefined },
+          opts: { jobId: key },
+        })),
+      );
+      await queue.addBulk(
+        (await dueReconciliation()).map(({ key, generation }) => ({
+          name: "reconciliation",
+          data: { operationKey: key, generation },
           opts: { jobId: key },
         })),
       );
@@ -63,6 +78,13 @@ async function dispatch() {
         );
       if (Date.now() >= nextRewrap) {
         nextRewrap = Date.now() + 5000;
+        if (Date.now() >= nextMetricsCleanup) {
+          nextMetricsCleanup = Date.now() + 60000;
+          await db.metricBucket.deleteMany({
+            where: { minute: { lt: new Date(Date.now() - 86400000) } },
+          });
+        }
+        await scheduleReconciliation();
         await rewrapTokenBatch();
         telemetry("worker_status", {
           dlqDepth: await db.deadLetter.count({

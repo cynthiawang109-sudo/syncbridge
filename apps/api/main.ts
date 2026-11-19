@@ -1,4 +1,6 @@
 import "reflect-metadata";
+import { MetricsController } from "./metrics";
+import { safeFrameworkLogger } from "./safe-logger";
 import { raw } from "express";
 import { initArchive } from "../../packages/shared/archive";
 import { webhookLimit } from "../../packages/shared/events";
@@ -9,6 +11,7 @@ import { APP_GUARD, NestFactory } from "@nestjs/core";
 import { AuthGuard, Public } from "./auth";
 import { TenantsController } from "./tenants";
 import { OAuthController } from "./oauth";
+import { ReconciliationController } from "./reconciliation";
 import { SyncController } from "./sync";
 @Controller()
 class HealthController {
@@ -24,6 +27,8 @@ class HealthController {
     TenantsController,
     OAuthController,
     SyncController,
+    ReconciliationController,
+    MetricsController,
     WebhooksController,
     DeadLettersController,
   ],
@@ -40,11 +45,16 @@ async function bootstrap() {
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    logger: safeFrameworkLogger,
+  });
   app.use(
     "/webhooks",
     raw({ type: "application/json", limit: webhookLimit, inflate: false }),
   );
   await app.listen(3000, "0.0.0.0");
 }
-void bootstrap();
+void bootstrap().catch(() => {
+  safeFrameworkLogger.error("startup_failed");
+  process.exitCode = 1;
+});

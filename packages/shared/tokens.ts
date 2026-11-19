@@ -140,10 +140,12 @@ export async function accessFor(
       continue;
     let fresh: Tokens;
     try {
-      fresh = await tokenRequest({
-        grant_type: "refresh_token",
-        refresh_token: stored.refresh_token,
-      });
+      fresh = await observedCall(id, () =>
+        tokenRequest({
+          grant_type: "refresh_token",
+          refresh_token: stored.refresh_token,
+        }),
+      );
     } catch (error) {
       if (!(error instanceof ProviderError)) throw error;
       if (
@@ -208,10 +210,26 @@ export async function withAccess<T>(
 ) {
   const first = await accessFor(id, generation);
   try {
-    return await call(first.tokens.access_token);
+    return await observedCall(id, () => call(first.tokens.access_token));
   } catch (error) {
     if (!(error instanceof ProviderError) || error.status !== 401) throw error;
     const next = await accessFor(id, generation, first.version);
-    return call(next.tokens.access_token);
+    return observedCall(id, () => call(next.tokens.access_token));
+  }
+}
+
+async function observedCall<T>(connectionId: string, call: () => Promise<T>) {
+  let status = 200;
+  try {
+    return await call();
+  } catch (error) {
+    status = error instanceof ProviderError ? error.status : 0;
+    throw error;
+  } finally {
+    telemetry(
+      "provider_observed",
+      { connectionId, status },
+      status === 0 ? "warn" : "info",
+    );
   }
 }

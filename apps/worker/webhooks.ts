@@ -175,12 +175,13 @@ export async function sweepWebhooks(
     nextAudit = batch.cursor ? now : now + 60000;
     for (const item of batch.items) {
       if (item.status === "pending" || item.status === "leased") {
-        console.warn(
-          JSON.stringify({
-            event: "aged_webhook",
+        telemetry(
+          "aged_webhook",
+          {
             connectionId: item.connection_id,
             eventId: item.event_id,
-          }),
+          },
+          "warn",
         );
         await recoverReceipt(item, queue);
       } else await expireArchiveItem(item, now);
