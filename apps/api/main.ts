@@ -12,6 +12,7 @@ import { AuthGuard, Public } from "./auth";
 import { TenantsController } from "./tenants";
 import { OAuthController } from "./oauth";
 import { ReconciliationController } from "./reconciliation";
+import { OpsController } from "./ops";
 import { SyncController } from "./sync";
 @Controller()
 class HealthController {
@@ -29,6 +30,7 @@ class HealthController {
     SyncController,
     ReconciliationController,
     MetricsController,
+    OpsController,
     WebhooksController,
     DeadLettersController,
   ],

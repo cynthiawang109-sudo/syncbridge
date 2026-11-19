@@ -27,6 +27,12 @@ Compose exposes the API on loopback port 4300, the mock provider on 4301, Postgr
 - `POST /connections/:id/reconciliation` accepts `resourceType` and requires an operator. The worker also schedules one traversal per eligible connection and resource each hour. Read the report at `GET /connections/:id/reconciliation/:runId`. Reports classify missing-local, missing-remote, stale, and conflicted rows. A completed snapshot confirms findings. Only confirmed missing-local and stale findings queue repairs. Partial findings are provisional. Remote absence and conflicts are reported for review.
 - Authenticated `GET /metrics` returns tenant-scoped status for operators and viewers. The current and preceding 59 minutes provide queue-lag and completed sync-duration samples, observed request counts and 429 rate, and refresh errors. The response also includes persisted retry counts and current unresolved DLQ depth.
 
+## Read-only ops console
+
+The API serves HTML at `/ops` for connections, `/ops/sync-runs` for sync history, `/ops/dead-letters` for DLQ status, and `/ops/reconciliation` for runs and reports. Each request uses the same signed bearer JWT as the API. Use a browser client that can attach the Authorization header to each navigation, or request the HTML with an authenticated HTTP client. Viewers can browse their tenant's records. Replay remains an operator API action.
+
+See the [AWS preflight report](docs/cdk-deploy.md) for the deployment outcome.
+
 ## Traceability
 
 | Claim                                                                                                | Named test or demo step                                                                                                          |
@@ -43,3 +49,5 @@ Compose exposes the API on loopback port 4300, the mock provider on 4301, Postgr
 | Closing generations fence in-flight writes and cleanup is verified twice                             | T24 offboarding race and Hardening generation-change repair test                                                                 |
 | Scheduled and manual reconciliation classifies drift and repairs only safe confirmed findings        | T08 confirmed drift, T29 invalidated snapshot, scheduled reconciliation test, Hardening silent mutation step                     |
 | Tenant-scoped operational metrics expose lag, duration, retries, 429s, refresh errors, and DLQ depth | Scheduled reconciliation and metrics test, refresh lifecycle cases, Hardening 429 and DLQ verification                           |
+
+| Read-only ops pages display tenant-scoped metadata and escape untrusted text | Ops console JWT, viewer, tenant isolation, and HTML tests |
