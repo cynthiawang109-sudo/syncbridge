@@ -49,5 +49,4 @@ See the [AWS preflight report](docs/cdk-deploy.md) for the deployment outcome.
 | Closing generations fence in-flight writes and cleanup is verified twice                             | T24 offboarding race and Hardening generation-change repair test                                                                 |
 | Scheduled and manual reconciliation classifies drift and repairs only safe confirmed findings        | T08 confirmed drift, T29 invalidated snapshot, scheduled reconciliation test, Hardening silent mutation step                     |
 | Tenant-scoped operational metrics expose lag, duration, retries, 429s, refresh errors, and DLQ depth | Scheduled reconciliation and metrics test, refresh lifecycle cases, Hardening 429 and DLQ verification                           |
-
-| Read-only ops pages display tenant-scoped metadata and escape untrusted text | Ops console JWT, viewer, tenant isolation, and HTML tests |
+| Read-only ops pages display tenant-scoped metadata and escape untrusted text                         | Ops console JWT, viewer, tenant isolation, and HTML tests                                                                        |
