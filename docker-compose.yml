@@ -29,6 +29,11 @@ services:
       ]
     ports: ["127.0.0.1:4800:8000"]
     volumes: [archive-data:/home/dynamodblocal/data]
+    healthcheck:
+      test: ["CMD", "curl", "-sS", "-o", "/dev/null", "http://127.0.0.1:8000/"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
   postgres:
     image: postgres:16
     environment:
@@ -61,6 +66,8 @@ services:
         "npm exec -- prisma migrate deploy && exec node dist/apps/api/main.js",
       ]
     depends_on:
+      dynamodb:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       mock-provider:
