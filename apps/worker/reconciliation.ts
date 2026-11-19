@@ -7,7 +7,6 @@ import {
 } from "@prisma/client";
 import { db, lockConnection } from "../../packages/shared/db";
 import { isResource } from "../../packages/shared/events";
-import { requestReconciliation } from "../../packages/shared/reconciliation";
 import {
   allowClaim,
   expired,
@@ -32,29 +31,6 @@ import { mirrorPayload, upsertMirror } from "../../packages/shared/mirror";
 import { validateSnapshotPage } from "../../packages/shared/snapshots";
 import { telemetry } from "../../packages/shared/telemetry";
 
-export async function scheduleReconciliation() {
-  const now = new Date();
-  for (const [resource, field] of [
-    ["employees", "reconcileEmployeesAt"],
-    ["payruns", "reconcilePayrunsAt"],
-  ] as const) {
-    const due = await db.connection.findMany({
-      where: {
-        lifecycle: "active",
-        tokenStatus: "connected",
-        pausedReason: null,
-        [field]: { lte: now },
-      },
-      orderBy: { [field]: "asc" },
-      take: 20,
-      select: { id: true },
-    });
-    for (const { id } of due)
-      await db.$transaction((tx) =>
-        requestReconciliation(tx, id, resource, undefined, true),
-      );
-  }
-}
 export function dueReconciliation() {
   return db.$queryRaw<Array<{ key: string; generation: number }>>`
     SELECT key, generation FROM (

@@ -17,15 +17,19 @@ import {
 import { randomUUID } from "node:crypto";
 import { Envelope } from "./crypto";
 
-const endpoint = process.env.DYNAMODB_URL ?? "http://localhost:4800";
+const cloudTable = process.env.WEBHOOK_TABLE_NAME;
 const dynamo = new DynamoDBClient({
-  endpoint,
-  region: "us-east-1",
-  credentials: { accessKeyId: "local", secretAccessKey: "local" },
+  region: process.env.AWS_REGION ?? "us-east-1",
+  ...(cloudTable
+    ? {}
+    : {
+        endpoint: process.env.DYNAMODB_URL ?? "http://localhost:4800",
+        credentials: { accessKeyId: "local", secretAccessKey: "local" },
+      }),
   maxAttempts: 2,
 });
 const client = DynamoDBDocumentClient.from(dynamo);
-const TableName = "webhook_events";
+const TableName = cloudTable ?? "webhook_events";
 export const ARCHIVE_LEASE_MS = 30000;
 export const RETENTION_MS = 30 * 86400000;
 const envelope = new Envelope();
@@ -56,6 +60,10 @@ const key = (connection_id: string, event_id: string) => ({
   event_id,
 });
 export async function initArchive() {
+  if (cloudTable) {
+    await dynamo.send(new DescribeTableCommand({ TableName }));
+    return;
+  }
   try {
     await dynamo.send(new DescribeTableCommand({ TableName }));
   } catch (error) {

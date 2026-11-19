@@ -2,6 +2,7 @@ import { db } from "./db";
 const redacted = new Set([
   "authorization",
   "x-webhook-signature",
+  "x-scheduler-key",
   "access_token",
   "refresh_token",
   "encrypted_tokens",

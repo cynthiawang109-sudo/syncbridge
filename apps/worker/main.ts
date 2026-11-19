@@ -1,8 +1,5 @@
-import {
-  dueReconciliation,
-  processReconciliation,
-  scheduleReconciliation,
-} from "./reconciliation";
+import { scheduleReconciliation } from "../../packages/shared/reconciliation";
+import { dueReconciliation, processReconciliation } from "./reconciliation";
 import { Worker } from "bullmq";
 import { setTimeout as sleep } from "node:timers/promises";
 import { db } from "../../packages/shared/db";
@@ -84,7 +81,8 @@ async function dispatch() {
             where: { minute: { lt: new Date(Date.now() - 86400000) } },
           });
         }
-        await scheduleReconciliation();
+        if (process.env.EXTERNAL_RECONCILIATION_SCHEDULE !== "true")
+          await scheduleReconciliation();
         await rewrapTokenBatch();
         telemetry("worker_status", {
           dlqDepth: await db.deadLetter.count({

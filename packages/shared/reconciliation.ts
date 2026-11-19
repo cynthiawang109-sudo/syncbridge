@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { lockConnection } from "./db";
+import { db, lockConnection } from "./db";
 import { type Resource } from "./events";
 
 export const reconciliationInterval = 60 * 60 * 1000;
@@ -72,4 +72,28 @@ export async function abortReconciliation(
     where: { connectionId, reconciliationId: { not: null } },
     data: { evidence: Prisma.DbNull },
   });
+}
+
+export async function scheduleReconciliation() {
+  const now = new Date();
+  for (const [resource, field] of [
+    ["employees", "reconcileEmployeesAt"],
+    ["payruns", "reconcilePayrunsAt"],
+  ] as const) {
+    const due = await db.connection.findMany({
+      where: {
+        lifecycle: "active",
+        tokenStatus: "connected",
+        pausedReason: null,
+        [field]: { lte: now },
+      },
+      orderBy: { [field]: "asc" },
+      take: 20,
+      select: { id: true },
+    });
+    for (const { id } of due)
+      await db.$transaction((tx) =>
+        requestReconciliation(tx, id, resource, undefined, true),
+      );
+  }
 }

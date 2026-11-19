@@ -13,6 +13,7 @@ import { TenantsController } from "./tenants";
 import { OAuthController } from "./oauth";
 import { ReconciliationController } from "./reconciliation";
 import { OpsController } from "./ops";
+import { SchedulerController } from "./scheduler";
 import { SyncController } from "./sync";
 @Controller()
 class HealthController {
@@ -31,6 +32,7 @@ class HealthController {
     ReconciliationController,
     MetricsController,
     OpsController,
+    SchedulerController,
     WebhooksController,
     DeadLettersController,
   ],
