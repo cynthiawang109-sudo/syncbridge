@@ -1,1 +1,1 @@
-{ "app": "npx ts-node --prefer-ts-exts app.ts" }
+{ "app": "node -r ts-node/register/transpile-only app.ts" }
