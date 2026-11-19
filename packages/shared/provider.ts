@@ -1,3 +1,4 @@
+import type { Resource } from "./events";
 const provider = process.env.PROVIDER_URL ?? "http://localhost:4301";
 export const callback =
   process.env.CALLBACK_URL ?? "http://localhost:4300/oauth/callback";
@@ -14,6 +15,7 @@ export interface Employee {
   name: string;
   version: number;
   revision: number;
+  amount?: number;
 }
 export interface Page {
   items: Employee[];
@@ -26,6 +28,7 @@ export class ProviderError extends Error {
     readonly status: number,
     readonly reason: string,
     readonly retryAfter = 0,
+    readonly payload?: unknown,
   ) {
     super(reason);
   }
@@ -76,6 +79,7 @@ async function request<T>(path: string, options: RequestInit, timeout: number) {
         response.status,
         safeCode,
         retryDelay(response.headers.get("retry-after")),
+        body,
       );
     }
     return body as T;
@@ -108,9 +112,30 @@ export async function tokenRequest(form: Record<string, string>) {
   return result;
 }
 export function fetchEmployees(token: string, query: URLSearchParams) {
+  return fetchPage("employees", token, query);
+}
+export function fetchPage(
+  resource: Resource,
+  token: string,
+  query: URLSearchParams,
+) {
   return request<Page>(
-    "/employees?" + query.toString(),
+    "/" + resource + "?" + query.toString(),
     { headers: { Authorization: "Bearer " + token } },
+    4000,
+  );
+}
+export function fetchRecord(resource: Resource, id: string, token: string) {
+  return request<Employee>(
+    "/" + resource + "/" + encodeURIComponent(id),
+    { headers: { Authorization: "Bearer " + token } },
+    4000,
+  );
+}
+export async function revokeToken(token: string) {
+  await request<unknown>(
+    "/revoke",
+    { method: "POST", body: new URLSearchParams({ token }) },
     4000,
   );
 }

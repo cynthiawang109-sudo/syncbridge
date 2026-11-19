@@ -1,37 +1,41 @@
-import { createHash, randomUUID } from "node:crypto";
-import { Prisma } from "@prisma/client";
-import { attemptDelay } from "../../packages/shared/attempts";
+import { randomUUID } from "node:crypto";
+import { Prisma, type OperationAttempt, type SyncRun } from "@prisma/client";
+import {
+  allowClaim,
+  errorEvidence,
+  expired,
+  failureDue,
+  MAX_AGE,
+  recordAttempt,
+  resetFailures,
+  WORK_LEASE,
+} from "../../packages/shared/budget";
+import { telemetry } from "../../packages/shared/telemetry";
+import { pauseAttempts } from "../../packages/shared/attempts";
+import { isResource } from "../../packages/shared/events";
+import { upsertMirror } from "../../packages/shared/mirror";
 import { db, lockConnection } from "../../packages/shared/db";
 import {
   Employee,
   Page,
   ProviderError,
-  fetchEmployees,
+  fetchPage,
 } from "../../packages/shared/provider";
 import {
   ConnectionUnavailable,
   withAccess,
 } from "../../packages/shared/tokens";
 
-const MAX_ATTEMPTS = 4;
-const MAX_AGE = 10 * 60 * 1000;
-const LEASE = 30000;
 const activeRuns = ["queued", "running"] as const;
-
-function expired(attempt: { attemptCount: number; createdAt: Date }) {
-  return (
-    attempt.attemptCount >= MAX_ATTEMPTS ||
-    Date.now() - attempt.createdAt.getTime() >= MAX_AGE
-  );
-}
-async function claim(key: string) {
+async function claim(key: string, generation?: number) {
   const target = await db.operationAttempt.findUnique({
     where: { key },
     include: { run: { select: { connectionId: true } } },
   });
-  if (!target) return;
+  if (!target?.run) return;
+  const connectionId = target.run.connectionId;
   return db.$transaction(async (tx) => {
-    const connection = await lockConnection(tx, target.run.connectionId);
+    const connection = await lockConnection(tx, connectionId);
     if (
       connection?.lifecycle !== "active" ||
       connection.tokenStatus !== "connected"
@@ -42,15 +46,17 @@ async function claim(key: string) {
       include: { run: true },
     });
     if (
-      !attempt ||
+      !attempt?.run ||
       attempt.run.generation !== connection.generation ||
+      (generation !== undefined && generation !== connection.generation) ||
       (attempt.run.status !== "queued" && attempt.run.status !== "running") ||
       !isDue(attempt)
     )
       return;
+    if (!(await allowClaim(tx, connection))) return;
     if (attempt.run.status === "queued")
       await tx.syncRun.update({
-        where: { id: attempt.runId },
+        where: { id: attempt.run.id },
         data: { status: "running" },
       });
     if (expired(attempt)) {
@@ -59,24 +65,32 @@ async function claim(key: string) {
         data: { state: "failed", claimToken: null, leaseUntil: null },
       });
       await tx.syncRun.update({
-        where: { id: attempt.runId },
+        where: { id: attempt.run.id },
         data: {
           status: attempt.run.page ? "partial" : "failed",
           error: "attempt_budget_exhausted",
         },
       });
+      await pageDeadLetter(
+        tx,
+        attempt,
+        attempt.run,
+        connection.tenantId,
+        "attempt_budget_exhausted",
+      );
       return;
     }
-    return tx.operationAttempt.update({
+    const next = await tx.operationAttempt.update({
       where: { key },
       data: {
         state: "claimed",
         attemptCount: { increment: 1 },
         claimToken: randomUUID(),
-        leaseUntil: new Date(Date.now() + LEASE),
+        leaseUntil: new Date(Date.now() + WORK_LEASE),
       },
-      include: { run: true },
     });
+    await recordAttempt(tx, next.key, next.attemptCount, "started");
+    return { ...next, run: attempt.run };
   });
 }
 function isDue(attempt: {
@@ -123,48 +137,16 @@ async function writeRecord(
 ) {
   const connectionId = claim.run.connectionId;
   const resourceType = claim.run.resourceType;
-  const payload = JSON.stringify({
-    id: row.id,
-    name: row.name,
-    version: row.version,
-  });
-  const hash = createHash("sha256").update(payload).digest("hex");
-  const applied = await tx.$queryRaw<{ version: number }[]>`
-    INSERT INTO external_records (connection_id, resource_type, external_id, version, payload_hash, payload, tombstone, last_synced_at)
-    VALUES (${connectionId}, ${resourceType}, ${row.id}, ${row.version}, ${hash}, ${payload}::jsonb, false, CURRENT_TIMESTAMP)
-    ON CONFLICT (connection_id, resource_type, external_id)
-    DO UPDATE SET version=excluded.version, payload_hash=excluded.payload_hash, payload=excluded.payload,
-      tombstone=excluded.tombstone, last_synced_at=excluded.last_synced_at
-    WHERE external_records.version < excluded.version
-    RETURNING version`;
-  let result = "applied";
-  if (!applied.length) {
-    const current = await tx.externalRecord.findUniqueOrThrow({
-      where: {
-        connectionId_resourceType_externalId: {
-          connectionId,
-          resourceType,
-          externalId: row.id,
-        },
-      },
-    });
-    result =
-      current.version > row.version
-        ? "stale"
-        : current.payloadHash === hash
-          ? "unchanged"
-          : "conflict";
-  }
+  const outcome = await upsertMirror(tx, connectionId, resourceType, row);
   await tx.syncRecordOutcome.create({
     data: {
-      runId: claim.runId,
+      runId: claim.run.id,
       recordKey: row.id,
       operationIdentity: claim.key,
       version: row.version,
       connectionId,
       resourceType,
-      result,
-      conflictHash: result === "conflict" ? hash : null,
+      ...outcome,
     },
   });
 }
@@ -212,9 +194,27 @@ async function commitPage(claim: Claim, page: Page) {
       where: { key: claim.key },
       data: { state: "done", claimToken: null, leaseUntil: null },
     });
+    await recordAttempt(tx, claim.key, claim.attemptCount, "processed");
+    if (!page.cursor)
+      telemetry("sync_finished", {
+        connectionId: claim.run.connectionId,
+        syncRunId: claim.run.id,
+        durationMs: Date.now() - claim.run.createdAt.getTime(),
+      });
+    await resetFailures(tx, claim.run.connectionId);
+    if (claim.replayId && claim.deadLetterId) {
+      await tx.replayAudit.update({
+        where: { id: claim.replayId },
+        data: { result: "resolved" },
+      });
+      await tx.deadLetter.update({
+        where: { id: claim.deadLetterId },
+        data: { state: "resolved" },
+      });
+    }
     const nextPage = claim.run.page + 1;
     await tx.syncRun.update({
-      where: { id: claim.runId },
+      where: { id: claim.run.id },
       data: {
         page: nextPage,
         cursor: page.cursor,
@@ -226,15 +226,22 @@ async function commitPage(claim: Claim, page: Page) {
     });
     if (page.cursor) {
       await tx.operationAttempt.create({
-        data: { key: claim.runId + "-" + nextPage, runId: claim.runId },
+        data: {
+          key: claim.run.id + "-" + nextPage,
+          runId: claim.run.id,
+          connectionId: claim.run.connectionId,
+          generation: claim.run.generation,
+        },
       });
     } else {
+      const field =
+        claim.run.resourceType === "payruns" ? "payrunWatermark" : "watermark";
       await tx.connection.updateMany({
         where: {
           id: claim.run.connectionId,
-          watermark: { lt: page.watermark },
+          [field]: { lt: page.watermark },
         },
-        data: { watermark: page.watermark },
+        data: { [field]: page.watermark },
       });
     }
   });
@@ -255,11 +262,9 @@ async function finishError(claim: Claim, error: unknown) {
         (error instanceof ConnectionUnavailable
           ? "connection_error"
           : "local_processing_error"));
-    const delay = Math.max(
-      providerError?.retryAfter ?? 0,
-      attemptDelay(claim.attemptCount),
-    );
-    const due = new Date(Date.now() + delay);
+    const due = paused
+      ? claim.dueAt
+      : await failureDue(tx, connection, claim.attemptCount, error);
     const retry =
       (providerError?.retryable ||
         (!providerError && !(error instanceof ConnectionUnavailable))) &&
@@ -275,8 +280,20 @@ async function finishError(claim: Claim, error: unknown) {
         leaseUntil: null,
       },
     });
+    if (paused || connection.failureStreak >= 11)
+      await pauseAttempts(tx, connection.id);
+    await recordAttempt(tx, claim.key, claim.attemptCount, reason, error);
+    if (!paused && !retry)
+      await pageDeadLetter(
+        tx,
+        claim,
+        claim.run,
+        connection.tenantId,
+        reason,
+        error,
+      );
     await tx.syncRun.update({
-      where: { id: claim.runId },
+      where: { id: claim.run.id },
       data: {
         error: reason,
         status:
@@ -289,16 +306,25 @@ async function finishError(claim: Claim, error: unknown) {
     });
   });
 }
-export async function processPage(key: string) {
-  const attempt = await claim(key);
+export async function processPage(key: string, generation?: number) {
+  const attempt = await claim(key, generation);
   if (!attempt) return;
   const { run } = attempt;
+  telemetry("sync_page_started", {
+    connectionId: run.connectionId,
+    syncRunId: run.id,
+    queueLagMs: Math.max(0, Date.now() - attempt.dueAt.getTime()),
+    attempt: attempt.attemptCount,
+  });
   const query = new URLSearchParams({ since: String(run.since) });
   if (run.cursor) query.set("cursor", run.cursor);
   if (run.snapshot) query.set("snapshot", run.snapshot);
   try {
+    if (!isResource(run.resourceType))
+      throw new ProviderError(400, "invalid_resource");
+    const resource = run.resourceType;
     const page = await withAccess(run.connectionId, run.generation, (token) =>
-      fetchEmployees(token, query),
+      fetchPage(resource, token, query),
     );
     validatePage(page, attempt);
     await commitPage(attempt, page);
@@ -317,11 +343,60 @@ export function duePages() {
       ],
       run: {
         status: { in: [...activeRuns] },
-        connection: { lifecycle: "active", tokenStatus: "connected" },
+        connection: {
+          lifecycle: "active",
+          tokenStatus: "connected",
+          pausedReason: null,
+          OR: [{ rateUntil: null }, { rateUntil: { lte: now } }],
+        },
       },
     },
-    select: { key: true },
+    select: { key: true, generation: true },
     orderBy: { dueAt: "asc" },
     take: 50,
   });
+}
+
+async function pageDeadLetter(
+  tx: Prisma.TransactionClient,
+  attempt: OperationAttempt,
+  run: SyncRun,
+  tenantId: string,
+  reason: string,
+  error?: unknown,
+) {
+  if (attempt.deadLetterId && attempt.replayId) {
+    await tx.deadLetter.update({
+      where: { id: attempt.deadLetterId },
+      data: { state: "reopened" },
+    });
+    await tx.replayAudit.update({
+      where: { id: attempt.replayId },
+      data: { result: "reopened" },
+    });
+  } else {
+    await tx.deadLetter.upsert({
+      where: {
+        connectionId_operationKey: {
+          connectionId: run.connectionId,
+          operationKey: attempt.key,
+        },
+      },
+      update: {},
+      create: {
+        connectionId: run.connectionId,
+        tenantId,
+        operationKey: attempt.key,
+        runId: run.id,
+        reason,
+        payload: {
+          resource: run.resourceType,
+          cursor: run.cursor,
+          snapshot: run.snapshot,
+          page: run.page,
+        },
+        providerError: errorEvidence(error),
+      },
+    });
+  }
 }

@@ -9,6 +9,7 @@ import {
   Post,
 } from "@nestjs/common";
 import { db, lockConnection } from "../../packages/shared/db";
+import { isResource } from "../../packages/shared/events";
 import { Caller, Identity, deny } from "./auth";
 import { ownConnection } from "./tenants";
 
@@ -21,6 +22,11 @@ export class SyncController {
     @Body() body: unknown,
   ) {
     const mode = (body as { mode?: unknown } | undefined)?.mode;
+    const resourceType =
+      (body as { resourceType?: unknown } | undefined)?.resourceType ??
+      "employees";
+    if (!isResource(resourceType))
+      throw new BadRequestException("Invalid resource");
     if (mode !== "full" && mode !== "incremental")
       throw new BadRequestException("Invalid sync mode");
     await ownConnection(identity, id);
@@ -36,7 +42,7 @@ export class SyncController {
       const active = await tx.syncRun.findFirst({
         where: {
           connectionId: id,
-          resourceType: "employees",
+          resourceType,
           status: { in: ["queued", "running"] },
         },
       });
@@ -45,12 +51,23 @@ export class SyncController {
         data: {
           connectionId: id,
           mode,
+          resourceType,
           generation: connection.generation,
-          since: mode === "incremental" ? connection.watermark : 0,
+          since:
+            mode === "incremental"
+              ? resourceType === "employees"
+                ? connection.watermark
+                : connection.payrunWatermark
+              : 0,
         },
       });
       await tx.operationAttempt.create({
-        data: { key: run.id + "-0", runId: run.id },
+        data: {
+          key: run.id + "-0",
+          runId: run.id,
+          connectionId: id,
+          generation: connection.generation,
+        },
       });
       return run;
     });
