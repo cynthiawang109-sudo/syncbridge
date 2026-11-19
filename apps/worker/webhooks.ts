@@ -13,7 +13,10 @@ import {
 import { db, lockConnection } from "../../packages/shared/db";
 import { parseEvent, type ProviderEvent } from "../../packages/shared/events";
 import { fetchRecord, ProviderError } from "../../packages/shared/provider";
-import { withAccess } from "../../packages/shared/tokens";
+import {
+  ConnectionUnavailable,
+  withAccess,
+} from "../../packages/shared/tokens";
 import { pauseAttempts } from "../../packages/shared/attempts";
 import { telemetry } from "../../packages/shared/telemetry";
 import { upsertMirror } from "../../packages/shared/mirror";
@@ -223,17 +226,19 @@ async function claim(job: PageJob, item: ArchiveItem | undefined) {
     if (!(await allowClaim(tx, connection))) return;
     const expires = item?.lease_expires_at ?? Date.now() + WORK_LEASE;
     if (expires <= Date.now()) return;
+    const exhausted = expired(current);
     const next = await tx.operationAttempt.update({
       where: { key: current.key },
       data: {
         state: "claimed",
         claimToken: randomUUID(),
         leaseUntil: new Date(expires),
-        attemptCount: { increment: 1 },
+        attemptCount: exhausted ? undefined : { increment: 1 },
       },
     });
-    await recordAttempt(tx, next.key, next.attemptCount, "started");
-    return { operation: next, connection, exhausted: expired(current) };
+    if (!exhausted)
+      await recordAttempt(tx, next.key, next.attemptCount, "started");
+    return { operation: next, connection, exhausted };
   });
 }
 async function complete(
@@ -306,10 +311,12 @@ async function complete(
       });
     }
     const providerError = error instanceof ProviderError ? error : undefined;
+    const connectionError = error instanceof ConnectionUnavailable;
     const reason =
       providerError?.status === 404
         ? "unresolved"
-        : (providerError?.reason ?? "local_processing_error");
+        : (providerError?.reason ??
+          (connectionError ? "connection_error" : "local_processing_error"));
     const paused = connection.tokenStatus === "needs_reauth";
     const due = paused
       ? current.dueAt
@@ -319,6 +326,7 @@ async function complete(
       (!claimed.exhausted &&
         !expired(current) &&
         due.getTime() < current.createdAt.getTime() + MAX_AGE &&
+        !connectionError &&
         (!providerError ||
           providerError.retryable ||
           providerError.status === 404));

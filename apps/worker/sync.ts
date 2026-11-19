@@ -26,7 +26,6 @@ import {
   withAccess,
 } from "../../packages/shared/tokens";
 
-const activeRuns = ["queued", "running"] as const;
 async function claim(key: string, generation?: number) {
   const target = await db.operationAttempt.findUnique({
     where: { key },
@@ -333,30 +332,21 @@ export async function processPage(key: string, generation?: number) {
   }
 }
 export function duePages() {
-  const now = new Date();
-  return db.operationAttempt.findMany({
-    where: {
-      dueAt: { lte: now },
-      OR: [
-        { state: "pending" },
-        { state: "claimed", leaseUntil: { lte: now } },
-      ],
-      run: {
-        status: { in: [...activeRuns] },
-        connection: {
-          lifecycle: "active",
-          tokenStatus: "connected",
-          pausedReason: null,
-          OR: [{ rateUntil: null }, { rateUntil: { lte: now } }],
-        },
-      },
-    },
-    select: { key: true, generation: true },
-    orderBy: { dueAt: "asc" },
-    take: 50,
-  });
+  return db.$queryRaw<Array<{ key: string; generation: number }>>`
+    SELECT key, generation FROM (
+      SELECT a.key, c.generation, a.due_at,
+        row_number() OVER (PARTITION BY c.tenant_id ORDER BY a.due_at, a.key) AS tenant_position
+      FROM operation_attempt a
+      JOIN sync_runs r ON r.id = a.run_id
+      JOIN connections c ON c.id = r.connection_id
+      WHERE a.due_at <= CURRENT_TIMESTAMP
+        AND (a.state = 'pending' OR (a.state = 'claimed' AND a.lease_until <= CURRENT_TIMESTAMP))
+        AND r.status IN ('queued','running') AND r.generation = c.generation
+        AND c.lifecycle = 'active' AND c.token_status = 'connected' AND c.paused_reason IS NULL
+        AND (c.rate_until IS NULL OR c.rate_until <= CURRENT_TIMESTAMP)
+    ) ready ORDER BY tenant_position, due_at LIMIT 50
+  `;
 }
-
 async function pageDeadLetter(
   tx: Prisma.TransactionClient,
   attempt: OperationAttempt,

@@ -131,6 +131,7 @@ export async function archiveReceipt(
         Item: item,
         ConditionExpression: "attribute_not_exists(connection_id)",
       }),
+      { abortSignal: AbortSignal.timeout(2400) },
     );
   } catch (error) {
     if (!conditional(error)) throw error;
@@ -201,6 +202,7 @@ export async function claimArchive(item: ArchiveItem, now = Date.now()) {
         },
         ReturnValues: "ALL_NEW",
       }),
+      { abortSignal: AbortSignal.timeout(2400) },
     );
     return result.Attributes as ArchiveItem;
   } catch (error) {
@@ -251,6 +253,7 @@ export async function projectArchive(
         ExpressionAttributeNames: { "#s": "status", "#ttl": "ttl" },
         ExpressionAttributeValues: values,
       }),
+      { abortSignal: AbortSignal.timeout(2400) },
     );
     return true;
   } catch (error) {
