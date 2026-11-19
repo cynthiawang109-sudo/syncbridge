@@ -19,6 +19,7 @@ import { createQueue } from "../packages/shared/queue";
 import {
   dispatchArchiveItem,
   eventKey,
+  processWebhook,
   sweepWebhooks,
 } from "../apps/worker/webhooks";
 import {
@@ -196,9 +197,10 @@ describe("MVP-B Compose integration", () => {
   test("T04/T20 fetched versions apply, stale versions drop and equal-version conflicts persist", async () => {
     const connection = await connected();
     for (const [seen, fetched, name, result] of [
-      [2, 4, "Version four", "applied"],
+      [3, 3, "Version three", "applied"],
       [1, 1, "Version one", "stale"],
       [2, 2, "Version two", "stale"],
+      [2, 4, "Version four", "applied"],
       [4, 4, "Conflicting four", "conflict"],
     ] as const) {
       const hook = event("synthetic-webhook-order", seen);
@@ -208,7 +210,12 @@ describe("MVP-B Compose integration", () => {
         [
           {
             resource: "employees",
-            row: { id: hook.externalId, version: fetched, name },
+            row: {
+              id: hook.externalId,
+              version: fetched,
+              name,
+              updated_at: "2026-11-18T00:00:00Z",
+            },
           },
         ],
       );
@@ -296,9 +303,15 @@ describe("MVP-B Compose integration", () => {
     );
     expect(await records(connection)).toHaveLength(0);
     await waitEvent(connection, update.id);
+    await faults({ failGet: 404 });
+    const countGets = async () =>
+      (await (await fetch(mock + "/__test/stats")).json()).getCalls;
+    const beforeDelete = await countGets();
     const deletion = event("synthetic-01", 6, "delete");
     expect((await webhook(connection.id, deletion)).status).toBe(202);
     await waitEvent(connection, deletion.id);
+    expect(await countGets()).toBe(beforeDelete);
+    await faults({});
     const late = event("synthetic-01", 5);
     await mutate(
       connection.id,
@@ -424,6 +437,11 @@ describe("MVP-B Compose integration", () => {
       await Promise.all([
         dispatchArchiveItem(stale, queue),
         dispatchArchiveItem(stale, queue),
+        processWebhook({
+          operationKey: eventKey(stale),
+          generation: stale.generation,
+          leaseToken: stale.lease_token,
+        }),
       ]);
       expect(await claimArchive(stale)).toBeUndefined();
     } finally {
@@ -439,6 +457,12 @@ describe("MVP-B Compose integration", () => {
     ).toBe(1);
     startWorker();
     const failed = await deadEntry(connection, event("synthetic-01", 1).id);
+    const terminal = (await archiveItem(connection.id, failed.eventId))!;
+    await processWebhook({
+      operationKey: eventKey(terminal),
+      generation: terminal.generation,
+      leaseToken: terminal.lease_token,
+    });
     await restoreLease(connection.id, failed.eventId);
     await waitEvent(connection, failed.eventId, "dead_lettered");
     expect(
@@ -453,7 +477,7 @@ describe("MVP-B Compose integration", () => {
       hook = event("synthetic-01", 1);
     await webhook(connection.id, hook);
     const before = (await archiveItem(connection.id, hook.id))!;
-    const future = Date.now() + 1200;
+    const future = Date.now() + 4500;
     await restoreLease(connection.id, hook.id, future, Date.now() - 1000);
     expect(await claimArchive(before)).toBeUndefined();
     expect((await archiveItem(connection.id, hook.id))?.due_at).toBe(future);
@@ -486,6 +510,39 @@ describe("MVP-B Compose integration", () => {
       await db.operationAttempt.findUnique({ where: { key } }),
     ).toMatchObject({ attemptCount: 2, state: "done" });
   }, 45000);
+  test("poison pause freezes pending retry and operator resume recomputes it", async () => {
+    const connection = await connected(),
+      hook = event("synthetic-01", 1);
+    await db.connection.update({
+      where: { id: connection.id },
+      data: { failureStreak: 11 },
+    });
+    await faults({ burst: 1 });
+    await webhook(connection.id, hook);
+    const key = eventKey(archiveKey(connection.id, hook.id));
+    const paused = await poll(async () => {
+      const attempt = await db.operationAttempt.findUnique({ where: { key } });
+      return attempt?.pausedAt ? attempt : undefined;
+    });
+    expect(
+      (await json("/connections/" + connection.id, connection.token))
+        .pausedReason,
+    ).toBe("poison_message_rate");
+    expect(paused.attemptCount).toBe(1);
+    await json(
+      "/connections/" + connection.id + "/resume",
+      connection.token,
+      "POST",
+    );
+    const resumed = await db.operationAttempt.findUniqueOrThrow({
+      where: { key },
+    });
+    expect(resumed.pausedAt).toBeNull();
+    expect(resumed.dueAt.getTime()).toBeGreaterThanOrEqual(
+      paused.dueAt.getTime(),
+    );
+    await waitEvent(connection, hook.id);
+  });
   test("T24 offboarding fences an in-flight fetch and verifies cleanup after the longest lease", async () => {
     const connection = await connected(),
       hook = event("synthetic-01", 1);
