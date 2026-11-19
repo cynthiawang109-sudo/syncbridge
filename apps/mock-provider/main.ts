@@ -1,24 +1,67 @@
 import Fastify, { FastifyReply } from "fastify";
 import { createHash, randomUUID } from "node:crypto";
+import {
+  isResource,
+  parseEvent,
+  signature,
+  webhookSecret,
+  type ProviderEvent,
+  type Resource,
+} from "../../packages/shared/events";
+import type { Employee } from "../../packages/shared/provider";
+import { setTimeout as sleep } from "node:timers/promises";
 
 const app = Fastify({ logger: false });
 const redirectUri =
   process.env.CALLBACK_URL ?? "http://localhost:4300/oauth/callback";
 const clientId = "syncbridge";
 const pageSize = 2;
-const employees = [
+const employees: Employee[] = [
   { id: "synthetic-01", name: "Aster Example", version: 1, revision: 1 },
   { id: "synthetic-02", name: "Birch Example", version: 2, revision: 2 },
   { id: "synthetic-03", name: "Cedar Example", version: 1, revision: 3 },
   { id: "synthetic-04", name: "Dune Example", version: 3, revision: 4 },
   { id: "synthetic-05", name: "Elm Example", version: 1, revision: 5 },
 ];
+const baseEmployees = employees.map((row) => ({ ...row }));
+const payruns: Employee[] = [
+  {
+    id: "synthetic-pay-01",
+    name: "Fixture pay period one",
+    version: 1,
+    revision: 1,
+    amount: 12345,
+  },
+  {
+    id: "synthetic-pay-02",
+    name: "Fixture pay period two",
+    version: 2,
+    revision: 2,
+    amount: 23456,
+  },
+  {
+    id: "synthetic-pay-03",
+    name: "Fixture pay period three",
+    version: 1,
+    revision: 3,
+    amount: 34567,
+  },
+];
+const basePayruns = payruns.map((row) => ({ ...row }));
+const resources = { employees, payruns };
+const revisions = { employees: 5, payruns: 3 };
 type Grant = { challenge: string; expires: number };
 type Session = { family: string; expires: number };
-type Snapshot = { rows: typeof employees; watermark: number; expires: number };
+type Snapshot = {
+  rows: Employee[];
+  resource: Resource;
+  watermark: number;
+  expires: number;
+};
 type Cursor = { snapshot: string; offset: number; expires: number };
 const grants = new Map<string, Grant>();
 const refresh = new Map<string, Session>();
+const retired = new Map<string, Session>();
 const access = new Map<string, Session>();
 const snapshots = new Map<string, Snapshot>();
 const cursors = new Map<string, Cursor>();
@@ -32,10 +75,29 @@ type Faults = {
   rotateBeforeDelay?: boolean;
   accessLifetime?: number;
   expireSnapshot?: boolean;
+  duplicate?: boolean;
+  outOfOrder?: boolean;
+  burst?: number;
+  latencyMs?: number;
+  failGet?: 400 | 404 | 503;
+  tamper?: boolean;
+  silent?: boolean;
+  resetData?: boolean;
 };
 let faults: Faults = {};
 let refreshCalls = 0;
 let listCalls = 0;
+let getCalls = 0;
+async function resourceFault(reply: FastifyReply) {
+  if (faults.latencyMs) await sleep(Math.min(3500, faults.latencyMs));
+  if (rateLimited(reply)) return true;
+  if ((faults.burst ?? 0) > 0) {
+    faults.burst!--;
+    reply.code(503).send({ error: "synthetic_burst" });
+    return true;
+  }
+  return false;
+}
 function issue(family: string) {
   const accessToken = randomUUID();
   const refreshToken = randomUUID();
@@ -47,7 +109,7 @@ function issue(family: string) {
     refresh_token: refreshToken,
     token_type: "Bearer",
     expires_in: expiresIn,
-    scope: "employees:read",
+    scope: "employees:read payruns:read",
   };
 }
 function validAccess(header?: string) {
@@ -77,6 +139,7 @@ const sweep = setInterval(() => {
   removeExpired(grants);
   removeExpired(access);
   removeExpired(refresh);
+  removeExpired(retired);
   removeExpired(snapshots);
   removeExpired(cursors);
 }, 60000);
@@ -90,7 +153,7 @@ app.get<{ Querystring: Record<string, string> }>("/authorize", (req, reply) => {
     q.code_challenge_method !== "S256" ||
     !/^[\w-]{43}$/.test(q.code_challenge ?? "") ||
     !/^[\w-]{43}$/.test(q.state ?? "") ||
-    q.scope !== "employees:read"
+    q.scope !== "employees:read payruns:read"
   )
     return reply.code(400).send({ error: "invalid_request" });
   const code = randomUUID();
@@ -146,6 +209,7 @@ app.post<{ Body: Record<string, string> }>("/token", async (req, reply) => {
     const session = refresh.get(form.refresh_token);
     if (!session || session.expires <= Date.now()) return null;
     refresh.delete(form.refresh_token);
+    retired.set(form.refresh_token, session);
     for (const [token, value] of access)
       if (value.family === session.family) access.delete(token);
     return issue(session.family);
@@ -160,7 +224,10 @@ app.post<{ Body: Record<string, string> }>("/token", async (req, reply) => {
 });
 app.post<{ Body: Record<string, string> }>("/revoke", (req) => {
   const token = req.body?.token;
-  const family = refresh.get(token)?.family ?? access.get(token)?.family;
+  const family =
+    refresh.get(token)?.family ??
+    access.get(token)?.family ??
+    retired.get(token)?.family;
   if (family) {
     for (const [key, value] of refresh)
       if (value.family === family) refresh.delete(key);
@@ -169,22 +236,38 @@ app.post<{ Body: Record<string, string> }>("/revoke", (req) => {
   }
   return {};
 });
-app.get<{ Params: { id: string } }>("/employees/:id", (req, reply) => {
-  if (!validAccess(req.headers.authorization))
-    return reply.code(401).send({ error: "invalid_token" });
-  if (rateLimited(reply)) return reply;
-  return (
-    employees.find((row) => row.id === req.params.id) ??
-    reply.code(404).send({ error: "not_found" })
-  );
-});
+app.get<{ Params: { resource: string; id: string } }>(
+  "/:resource/:id",
+  async (req, reply) => {
+    const resource = req.params.resource;
+    if (!isResource(resource))
+      return reply.code(404).send({ error: "not_found" });
+    if (!validAccess(req.headers.authorization))
+      return reply.code(401).send({ error: "invalid_token" });
+    getCalls++;
+    if (await resourceFault(reply)) return reply;
+    if (faults.failGet) {
+      const status = faults.failGet;
+      delete faults.failGet;
+      return reply.code(status).send({ error: "synthetic_get_failure" });
+    }
+    return (
+      resources[resource].find((row) => row.id === req.params.id) ??
+      reply.code(404).send({ error: "not_found" })
+    );
+  },
+);
 app.get<{
+  Params: { resource: string };
   Querystring: { snapshot?: string; cursor?: string; since?: string };
-}>("/employees", (req, reply) => {
+}>("/:resource", async (req, reply) => {
+  const resource = req.params.resource;
+  if (!isResource(resource))
+    return reply.code(404).send({ error: "not_found" });
   if (!validAccess(req.headers.authorization))
     return reply.code(401).send({ error: "invalid_token" });
   listCalls++;
-  if (rateLimited(reply)) return reply;
+  if (await resourceFault(reply)) return reply;
   const q = req.query;
   const cursor = q.cursor && cursors.get(q.cursor);
   if (
@@ -205,13 +288,20 @@ app.get<{
     if (!Number.isSafeInteger(since) || since < 0)
       return reply.code(400).send({ error: "invalid_since" });
     snapshot = {
-      rows: employees.filter((row) => row.revision > since),
-      watermark: employees.length,
+      rows: resources[resource]
+        .filter((row) => row.revision > since)
+        .map((row) => ({ ...row })),
+      resource,
+      watermark: revisions[resource],
       expires: Date.now() + 300000,
     };
     snapshots.set(token, snapshot);
   }
-  if (!snapshot || snapshot.expires <= Date.now())
+  if (
+    !snapshot ||
+    snapshot.resource !== resource ||
+    snapshot.expires <= Date.now()
+  )
     return reply.code(409).send({ error: "snapshot_expired" });
   const next = offset + pageSize < snapshot.rows.length ? randomUUID() : null;
   if (next)
@@ -228,12 +318,84 @@ app.get<{
   };
 });
 app.get("/health", () => ({ ok: true }));
-app.get("/__test/stats", () => ({ refreshCalls, listCalls }));
+app.get("/__test/stats", () => ({ refreshCalls, listCalls, getCalls }));
 app.patch<{ Body: Faults }>("/__test/faults", (req) => {
   faults = req.body;
+  if (faults.resetData) {
+    employees.splice(0, employees.length, ...baseEmployees);
+    payruns.splice(0, payruns.length, ...basePayruns);
+    revisions.employees = 5;
+    revisions.payruns = 3;
+    snapshots.clear();
+    cursors.clear();
+  }
   if (faults.expireAccess) access.clear();
   if (faults.revokeRefresh) refresh.clear();
   if (faults.expireSnapshot) snapshots.clear();
   return { ok: true };
+});
+
+app.post<{
+  Body: {
+    connectionId: string;
+    events: ProviderEvent[];
+    changes?: Array<{ resource: Resource; row: Employee }>;
+  };
+}>("/__test/events", async (req, reply) => {
+  const { connectionId, events, changes = [] } = req.body;
+  if (
+    !/^[a-zA-Z0-9_-]{1,120}$/.test(connectionId) ||
+    !Array.isArray(events) ||
+    events.length > 25 ||
+    !Array.isArray(changes) ||
+    changes.length > 25
+  ) {
+    return reply.code(400).send({ error: "invalid_fixture" });
+  }
+  const validated = events.map((event) => parseEvent(event));
+  for (const { resource, row } of changes) {
+    if (
+      !isResource(resource) ||
+      typeof row.id !== "string" ||
+      typeof row.name !== "string" ||
+      !Number.isInteger(row.version) ||
+      row.version < 1
+    ) {
+      return reply.code(400).send({ error: "invalid_fixture" });
+    }
+    const rows = resources[resource];
+    const saved = { ...row, revision: ++revisions[resource] };
+    const index = rows.findIndex((current) => current.id === row.id);
+    if (index < 0) rows.push(saved);
+    else rows[index] = saved;
+  }
+  const statuses: number[] = [];
+  if (!faults.silent) {
+    const target = process.env.WEBHOOK_TARGET ?? "http://api:3000";
+    if (faults.outOfOrder) validated.reverse();
+    for (const event of validated) {
+      const raw = Buffer.from(JSON.stringify(event));
+      for (let attempt = 0; attempt < (faults.duplicate ? 2 : 1); attempt++) {
+        const timestamp = Date.now().toString();
+        const signed = faults.tamper
+          ? "0".repeat(64)
+          : signature(webhookSecret(connectionId)!, timestamp, raw).toString(
+              "hex",
+            );
+        const result = await fetch(target + "/webhooks/" + connectionId, {
+          method: "POST",
+          body: raw,
+          signal: AbortSignal.timeout(6000),
+          headers: {
+            "content-type": "application/json",
+            "x-webhook-timestamp": timestamp,
+            "x-webhook-signature": signed,
+          },
+        });
+        statuses.push(result.status);
+      }
+    }
+  }
+  return { statuses };
 });
 void app.listen({ port: 3001, host: "0.0.0.0" });
