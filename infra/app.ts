@@ -127,11 +127,10 @@ for (const sort of ["next_attempt_at", "due_at"]) {
 }
 
 const albGroup = new ec2.SecurityGroup(stack, "DemoIngress", { vpc });
-for (const port of [443, 8443])
-  albGroup.addIngressRule(
-    ec2.Peer.ipv4(clientCidr.valueAsString),
-    ec2.Port.tcp(port),
-  );
+albGroup.addIngressRule(
+  ec2.Peer.ipv4(clientCidr.valueAsString),
+  ec2.Port.tcp(443),
+);
 const alb = new elb.ApplicationLoadBalancer(stack, "Alb", {
   vpc,
   internetFacing: true,
@@ -141,7 +140,7 @@ const alb = new elb.ApplicationLoadBalancer(stack, "Alb", {
 tasks.addIngressRule(albGroup, ec2.Port.tcp(3000));
 tasks.addIngressRule(albGroup, ec2.Port.tcp(3001));
 const publicApi = "https://" + alb.loadBalancerDnsName;
-const publicMock = publicApi + ":8443";
+const publicMock = publicApi;
 const privateApi = "http://api.syncbridge.internal:3000";
 const privateMock = "http://mock.syncbridge.internal:3001";
 const callback = publicApi + "/oauth/callback";
@@ -152,12 +151,6 @@ const apiListener = alb.addListener("ApiHttps", {
   port: 443,
   certificates: [certificate],
   open: false,
-});
-const mockListener = alb.addListener("MockHttps", {
-  port: 8443,
-  certificates: [certificate],
-  open: false,
-  defaultAction: elb.ListenerAction.fixedResponse(404),
 });
 apiListener.addAction("InternalRoute", {
   priority: 10,
@@ -280,10 +273,10 @@ apiListener.addTargets("ApiTarget", {
   healthCheck: { path: "/health" },
 });
 service("WorkerService", workerTask);
-mockListener.addTargets("SyntheticProvider", {
+apiListener.addTargets("SyntheticProvider", {
   port: 3001,
   protocol: elb.ApplicationProtocol.HTTP,
-  priority: 10,
+  priority: 20,
   conditions: [
     elb.ListenerCondition.pathPatterns(["/authorize", "/__test/events"]),
   ],
